@@ -141,7 +141,14 @@ class GAxisAgent:
         await self._emit(TaskEvent("task_started", task_id, {"instruction": instruction}))
 
         # Extract domain for memory lookup
-        domain = self._extract_domain(self.browser.page.url if mode == "api" else self._ext_url)
+        if mode == "api":
+            try:
+                current_url = self.browser.page.url
+            except RuntimeError:
+                current_url = ""
+        else:
+            current_url = self._ext_url
+        domain = self._extract_domain(current_url)
 
         try:
             # Load memory context

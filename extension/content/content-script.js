@@ -7,7 +7,16 @@
  *   - Direct action execution on the page (click, type, scroll)
  */
 
-import { MSG } from "../shared/types.js";
+// Content scripts cannot use ES modules — inline the message constants
+const MSG = {
+  PERCEIVING: "gaxis:perceiving",
+  PERCEPTION: "gaxis:perception",
+  ACTION_PLANNED: "gaxis:action_planned",
+  EXECUTE_ACTION: "gaxis:execute_action",
+  SHOW_OVERLAY: "gaxis:show_overlay",
+  CLEAR_OVERLAY: "gaxis:clear_overlay",
+  HIGHLIGHT_ELEMENT: "gaxis:highlight_element",
+};
 
 let overlayContainer = null;
 

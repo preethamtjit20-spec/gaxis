@@ -130,7 +130,9 @@ class BrowserRuntime:
                     if x is not None and y is not None:
                         await self.page.mouse.click(x, y)
                         await asyncio.sleep(0.1)
-                    await self.page.keyboard.press("Control+a")
+                    import platform
+                    mod = "Meta+a" if platform.system() == "Darwin" else "Control+a"
+                    await self.page.keyboard.press(mod)
                     await asyncio.sleep(0.05)
                     if text:
                         await self.page.keyboard.type(text, delay=30)
