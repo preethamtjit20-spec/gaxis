@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>G-Axis Settings</title>
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>G-Axis Settings</h1>
+      <p class="subtitle">Configure your AI browser agent</p>
+    </header>
+
+    <!-- Connection -->
+    <section class="settings-group">
+      <h2>Connection</h2>
+      <div class="field">
+        <label for="backend-url">Backend URL</label>
+        <div class="input-row">
+          <input type="url" id="backend-url" placeholder="https://gaxis-xxxxx.run.app" />
+          <button id="test-connection" class="secondary-btn">Test</button>
+        </div>
+        <span id="connection-result" class="field-hint"></span>
+      </div>
+    </section>
+
+    <!-- AI Model -->
+    <section class="settings-group">
+      <h2>AI Model</h2>
+      <div class="field">
+        <label for="model-select">Model</label>
+        <select id="model-select">
+          <option value="gemini-2.5-pro-preview-06-05">Gemini 2.5 Pro (recommended)</option>
+          <option value="gemini-2.0-flash">Gemini 2.0 Flash (faster)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="temperature">Temperature</label>
+        <div class="slider-row">
+          <input type="range" id="temperature" min="0" max="1" step="0.1" value="0.2" />
+          <span id="temperature-value">0.2</span>
+        </div>
+        <span class="field-hint">Lower = more precise, Higher = more creative</span>
+      </div>
+      <div class="field">
+        <label for="max-steps">Max steps per task</label>
+        <input type="number" id="max-steps" min="5" max="100" value="30" />
+      </div>
+    </section>
+
+    <!-- Safety & Supervision -->
+    <section class="settings-group">
+      <h2>Safety & Supervision</h2>
+      <div class="field">
+        <label>Supervision Mode</label>
+        <div class="radio-group">
+          <label class="radio-label">
+            <input type="radio" name="supervision" value="supervised" checked />
+            <div>
+              <strong>Supervised</strong>
+              <span>Approve all risky actions</span>
+            </div>
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="supervision" value="semi-auto" />
+            <div>
+              <strong>Semi-automatic</strong>
+              <span>Only approve critical actions</span>
+            </div>
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="supervision" value="autonomous" />
+            <div>
+              <strong>Autonomous</strong>
+              <span>No approvals (use with caution)</span>
+            </div>
+          </label>
+        </div>
+      </div>
+      <div class="field">
+        <label for="confidence-threshold">Confidence threshold</label>
+        <div class="slider-row">
+          <input type="range" id="confidence-threshold" min="0.1" max="0.9" step="0.05" value="0.4" />
+          <span id="confidence-value">40%</span>
+        </div>
+        <span class="field-hint">Actions below this confidence require approval</span>
+      </div>
+      <div class="field">
+        <label for="blocked-domains">Blocked domains</label>
+        <textarea id="blocked-domains" rows="3" placeholder="bank.com&#10;paypal.com&#10;(one per line)"></textarea>
+        <span class="field-hint">Agent will not interact with these domains</span>
+      </div>
+      <div class="field">
+        <label class="checkbox-label">
+          <input type="checkbox" id="approve-passwords" checked />
+          Always require approval for password fields
+        </label>
+      </div>
+      <div class="field">
+        <label class="checkbox-label">
+          <input type="checkbox" id="approve-payments" checked />
+          Always require approval for payment forms
+        </label>
+      </div>
+      <div class="field">
+        <label class="checkbox-label">
+          <input type="checkbox" id="allow-downloads" />
+          Allow file downloads
+        </label>
+      </div>
+    </section>
+
+    <!-- Voice -->
+    <section class="settings-group">
+      <h2>Voice</h2>
+      <div class="field">
+        <label class="checkbox-label">
+          <input type="checkbox" id="voice-enabled" checked />
+          Enable voice input
+        </label>
+      </div>
+      <div class="field">
+        <label for="voice-language">Language</label>
+        <select id="voice-language">
+          <option value="en-US">English (US)</option>
+          <option value="en-GB">English (UK)</option>
+          <option value="es-ES">Spanish</option>
+          <option value="fr-FR">French</option>
+          <option value="de-DE">German</option>
+          <option value="ja-JP">Japanese</option>
+          <option value="zh-CN">Chinese (Simplified)</option>
+        </select>
+      </div>
+    </section>
+
+    <!-- Agent Identity -->
+    <section class="settings-group">
+      <h2>Agent Identity (A2A)</h2>
+      <div class="field">
+        <label>Agent Card</label>
+        <code id="agent-card-url" class="code-block">Loading...</code>
+        <span class="field-hint">Other agents can discover G-Axis at this URL</span>
+      </div>
+      <div class="field">
+        <label>MCP Endpoint</label>
+        <code id="mcp-endpoint" class="code-block">Loading...</code>
+        <span class="field-hint">MCP-compatible tool server for programmatic access</span>
+      </div>
+    </section>
+
+    <!-- Audit -->
+    <section class="settings-group">
+      <h2>Audit & History</h2>
+      <div class="field">
+        <label>Task History</label>
+        <span id="task-count" class="dim">Loading...</span>
+      </div>
+      <div class="field-row">
+        <button id="export-audit" class="secondary-btn">Export Audit Log</button>
+        <button id="clear-history" class="danger-btn-outline">Clear History</button>
+      </div>
+    </section>
+
+    <!-- Save -->
+    <div class="save-bar">
+      <span id="save-status"></span>
+      <button id="save-btn" class="primary-btn">Save Settings</button>
+    </div>
+  </div>
+
+  <script src="settings.js" type="module"></script>
+</body>
+</html>
