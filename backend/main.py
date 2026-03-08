@@ -111,6 +111,15 @@ async def websocket_endpoint(ws: WebSocket):
                         title=data.get("title", ""),
                     )
 
+            elif msg_type == "dom_snapshot":
+                # Extension sending a DOM snapshot
+                if agent:
+                    agent.receive_dom_snapshot(data.get("elements", []))
+
+            elif msg_type == "dom_changed":
+                # Extension reporting DOM mutations — log for context
+                logger.debug(f"DOM changed: {len(data.get('changes', []))} mutations")
+
             elif msg_type == "action_result":
                 # Extension reporting action execution result
                 pass  # Future: handle action confirmation from extension
@@ -152,31 +161,52 @@ async def agent_card():
     """Agent Card for A2A discovery."""
     return JSONResponse({
         "name": "G-Axis",
-        "description": "AI browser agent with supervised autonomy. Sees, hears, and acts on the web.",
-        "version": "0.1.0",
+        "description": "Multi-agent AI browser system with supervised autonomy. Uses Gemini Vision for UI understanding, multi-agent orchestration for task execution, and retrieval-based memory for learning.",
+        "version": "0.2.0",
         "provider": {"name": "G-Axis", "url": "https://github.com/preethams/gaxis"},
         "capabilities": [
             "web_navigation", "visual_ui_understanding",
             "form_filling", "data_extraction", "supervised_execution",
+            "multi_agent_orchestration", "retrieval_memory",
+            "dom_intelligence", "anti_bot_resilience",
         ],
+        "architecture": {
+            "type": "multi_agent_graph",
+            "agents": [
+                {"name": "perceiver", "role": "Screenshot + DOM analysis via Gemini Vision"},
+                {"name": "orchestrator", "role": "Task decomposition and agent delegation"},
+                {"name": "navigator", "role": "Page navigation with Gemini tool calling"},
+                {"name": "form_filler", "role": "Form interaction with Gemini tool calling"},
+                {"name": "data_extractor", "role": "Structured data extraction"},
+                {"name": "verifier", "role": "Task completion validation"},
+            ],
+            "perception": "Hybrid — Gemini Vision (screenshots) + DOM snapshots (precise coordinates)",
+            "execution": "Gemini native function calling → browser tool dispatch",
+        },
         "endpoints": {
             "task": {"method": "POST", "path": "/api/task"},
             "websocket": {"path": "/ws"},
             "health": {"method": "GET", "path": "/health"},
             "agent_card": {"method": "GET", "path": "/.well-known/agent.json"},
+            "memory": {"method": "GET", "path": "/api/memory/{domain}"},
+            "patterns": {"method": "GET", "path": "/api/patterns"},
         },
         "tools": [
-            {"name": "browser.navigate", "description": "Navigate to a URL"},
-            {"name": "browser.click", "description": "Click at screen coordinates (x, y)"},
-            {"name": "browser.type", "description": "Type text at coordinates"},
-            {"name": "browser.scroll", "description": "Scroll the page up or down"},
-            {"name": "browser.screenshot", "description": "Capture page screenshot"},
-            {"name": "page.perceive", "description": "Analyze page with Gemini vision"},
+            {"name": "click", "description": "Click at screen coordinates"},
+            {"name": "type_text", "description": "Type text into an input field"},
+            {"name": "navigate", "description": "Navigate to a URL"},
+            {"name": "scroll", "description": "Scroll page up or down"},
+            {"name": "press_key", "description": "Press a keyboard key"},
+            {"name": "hover", "description": "Hover over an element"},
+            {"name": "extract_data", "description": "Extract structured data from page"},
+            {"name": "wait", "description": "Wait for page to load"},
         ],
         "auth": {"type": "none"},
         "memory": {
-            "episodic": "Per-domain task history",
-            "semantic": "Cross-site learned patterns",
+            "working": "Per-task state (dies with task)",
+            "episodic": "Per-domain task history with outcomes",
+            "semantic": "Cross-site learned patterns (5 built-in)",
+            "retrieval": "Embedding-based similarity search across all experiences (Gemini text-embedding-004)",
         },
     })
 

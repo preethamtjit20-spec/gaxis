@@ -194,6 +194,31 @@ function handleMessage(msg) {
       showComplete(false, msg.data);
       break;
 
+    case MSG.AGENT_ACTIVE:
+      const agentNames = {
+        perceiver: "Perceiver",
+        orchestrator: "Orchestrator",
+        navigator: "Navigator",
+        form_filler: "Form Filler",
+        data_extractor: "Data Extractor",
+        verifier: "Verifier",
+      };
+      const agentName = agentNames[msg.data?.agent] || msg.data?.agent || "Agent";
+      setStatus(`${agentName} active`, "executing");
+      if (msg.data?.subtask) {
+        addTimelineEntry("agent", agentName, msg.data.subtask);
+      }
+      break;
+
+    case MSG.MEMORY_LOADED:
+      if (msg.data?.episodes > 0 || msg.data?.similar > 0) {
+        addTimelineEntry(
+          "brain", "Memory loaded",
+          `${msg.data.episodes || 0} past visits, ${msg.data.patterns || 0} patterns, ${msg.data.similar || 0} similar tasks`
+        );
+      }
+      break;
+
     case MSG.ERROR:
       addTimelineEntry("error", "Error", msg.data?.message || "Unknown error");
       break;

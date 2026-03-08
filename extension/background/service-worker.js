@@ -2,10 +2,10 @@
  * G-Axis Background Service Worker
  *
  * Central hub that connects:
- *   Side Panel ↔ Backend (WebSocket)
- *   Side Panel ↔ Content Script
+ *   Side Panel <-> Backend (WebSocket)
+ *   Side Panel <-> Content Script
  *
- * Manages WebSocket lifecycle, message routing, and settings.
+ * Manages WebSocket lifecycle, message routing, DOM snapshots, and settings.
  */
 
 import { MSG, DEFAULT_SETTINGS } from "../shared/types.js";
@@ -14,6 +14,7 @@ let ws = null;
 let wsReconnectTimer = null;
 let settings = { ...DEFAULT_SETTINGS };
 let isConnected = false;
+let latestDomSnapshot = [];
 
 // ─── EXTENSION LIFECYCLE ──────────────────────────────────────
 
@@ -87,9 +88,8 @@ function sendToBackend(msg) {
 
 // ─── MESSAGE ROUTING ──────────────────────────────────────────
 
-// Backend → Side Panel + Content Script
+// Backend -> Side Panel + Content Script
 function handleBackendMessage(msg) {
-  // Map backend event types to extension message types
   const typeMap = {
     task_started: MSG.TASK_STARTED,
     perceiving: MSG.PERCEIVING,
@@ -101,28 +101,44 @@ function handleBackendMessage(msg) {
     task_completed: MSG.TASK_COMPLETED,
     task_failed: MSG.TASK_FAILED,
     error: MSG.ERROR,
+    agent_active: MSG.AGENT_ACTIVE,
+    memory_loaded: MSG.MEMORY_LOADED,
   };
 
-  // Handle backend requesting a screenshot from the extension
+  // Backend requesting a screenshot
   if (msg.type === "request_screenshot") {
     captureAndSendScreenshot();
     return;
   }
 
-  // Handle backend requesting action execution in the active tab
+  // Backend requesting DOM snapshot
+  if (msg.type === "request_dom_snapshot") {
+    requestDomSnapshot();
+    return;
+  }
+
+  // Backend requesting action execution in the active tab
   if (msg.type === "execute_action") {
     sendToActiveTab({ type: MSG.EXECUTE_ACTION, data: msg.data });
-    // After action, send fresh screenshot back
-    setTimeout(() => captureAndSendScreenshot(), 800);
-    // Also forward to side panel
+    // After action, send fresh screenshot + DOM snapshot
+    setTimeout(() => {
+      captureAndSendScreenshot();
+      requestDomSnapshot();
+    }, 800);
     broadcastToSidePanel({ type: MSG.ACTION_PLANNED, data: msg.data, task_id: msg.task_id });
+    return;
+  }
+
+  // Backend requesting page data (cookies, storage)
+  if (msg.type === "request_page_data") {
+    sendToActiveTab({ type: MSG.GET_PAGE_DATA });
     return;
   }
 
   const extType = typeMap[msg.type] || MSG.ERROR;
   broadcastToSidePanel({ type: extType, data: msg.data, task_id: msg.task_id });
 
-  // Also send visual feedback to content script
+  // Visual feedback to content script
   if (msg.type === "action_planned" && msg.data) {
     sendToActiveTab({
       type: MSG.SHOW_OVERLAY,
@@ -140,7 +156,7 @@ function handleBackendMessage(msg) {
     sendToActiveTab({ type: MSG.CLEAR_OVERLAY });
   }
 
-  // Show perception overlay — highlight detected elements
+  // Perception overlay — highlight detected elements
   if (msg.type === "perception" && msg.data && msg.data.elements) {
     sendToActiveTab({
       type: MSG.HIGHLIGHT_ELEMENT,
@@ -149,7 +165,7 @@ function handleBackendMessage(msg) {
   }
 }
 
-// Side Panel → Background → Backend/Content Script
+// Side Panel / Content Script -> Background -> Backend
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.type) {
     case MSG.CONNECT:
@@ -158,6 +174,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
 
     case MSG.RUN_TASK:
+      // Before running task, get a DOM snapshot
+      requestDomSnapshot();
       sendToBackend({ type: "run_task", instruction: message.instruction, mode: "extension" });
       sendResponse({ ok: true });
       break;
@@ -184,17 +202,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case MSG.SAVE_SETTINGS:
       settings = { ...DEFAULT_SETTINGS, ...message.settings };
       chrome.storage.local.set({ gaxis_settings: settings });
-      // Reconnect if backend URL changed
-      if (ws) {
-        ws.close();
-      }
+      if (ws) ws.close();
       connectToBackend();
       sendResponse({ ok: true });
       break;
 
     case MSG.CAPTURE_SCREENSHOT:
       captureActiveTab().then((dataUrl) => sendResponse({ screenshot: dataUrl }));
-      return true; // async response
+      return true; // async
+
+    // Content script sending DOM snapshot
+    case MSG.DOM_SNAPSHOT:
+      latestDomSnapshot = message.data?.elements || [];
+      sendToBackend({
+        type: "dom_snapshot",
+        elements: latestDomSnapshot,
+        url: message.data?.url || "",
+      });
+      sendResponse({ ok: true });
+      break;
+
+    // Content script reporting DOM mutations
+    case MSG.DOM_CHANGED:
+      sendToBackend({
+        type: "dom_changed",
+        changes: message.data?.changes || [],
+        url: message.data?.url || "",
+      });
+      sendResponse({ ok: true });
+      break;
 
     default:
       sendResponse({ error: "Unknown message type" });
@@ -204,9 +240,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // ─── HELPERS ──────────────────────────────────────────────────
 
 function broadcastToSidePanel(msg) {
-  chrome.runtime.sendMessage(msg).catch(() => {
-    // Side panel may not be open — ignore
-  });
+  chrome.runtime.sendMessage(msg).catch(() => {});
 }
 
 async function sendToActiveTab(msg) {
@@ -216,7 +250,7 @@ async function sendToActiveTab(msg) {
       chrome.tabs.sendMessage(tab.id, msg).catch(() => {});
     }
   } catch (e) {
-    // No active tab — ignore
+    // No active tab
   }
 }
 
@@ -237,21 +271,40 @@ async function captureAndSendScreenshot() {
   try {
     const dataUrl = await captureActiveTab();
     if (!dataUrl) return;
-
-    // Strip data:image/jpeg;base64, prefix
     const b64 = dataUrl.replace(/^data:image\/\w+;base64,/, "");
-
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const url = tab?.url || "";
     const title = tab?.title || "";
-
-    sendToBackend({
-      type: "screenshot",
-      screenshot: b64,
-      url,
-      title,
-    });
+    sendToBackend({ type: "screenshot", screenshot: b64, url, title });
   } catch (e) {
     console.error("captureAndSendScreenshot failed:", e);
   }
 }
+
+async function requestDomSnapshot() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id) {
+      chrome.tabs.sendMessage(tab.id, { type: MSG.GET_DOM_SNAPSHOT }, (response) => {
+        if (response?.elements) {
+          latestDomSnapshot = response.elements;
+          sendToBackend({
+            type: "dom_snapshot",
+            elements: latestDomSnapshot,
+            url: tab.url || "",
+          });
+        }
+      });
+    }
+  } catch (e) {
+    // Content script may not be injected
+  }
+}
+
+// Listen for tab navigation to refresh DOM snapshots
+chrome.webNavigation?.onCompleted?.addListener((details) => {
+  if (details.frameId === 0) {
+    // Main frame navigation complete — get fresh DOM snapshot
+    setTimeout(() => requestDomSnapshot(), 1000);
+  }
+});

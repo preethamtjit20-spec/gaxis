@@ -1,20 +1,25 @@
 """G-Axis Memory System.
 
-Three-tier memory for context-aware agent behavior:
+Four-tier memory for context-aware agent behavior:
 
-1. Working Memory  — current task state (in-process, dies with task)
-2. Episodic Memory — per-site task history (what worked before)
-3. Semantic Memory — cross-site learned patterns (cookie banners, login flows, etc.)
+1. Working Memory   — current task state (in-process, dies with task)
+2. Episodic Memory  — per-site task history (what worked before)
+3. Semantic Memory  — cross-site learned patterns (cookie banners, login flows, etc.)
+4. Retrieval Memory — embedding-based similarity search across all experiences
 """
 
 from __future__ import annotations
 
 import json
+import logging
+import math
 import os
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger("gaxis.memory")
 
 
 @dataclass
@@ -93,11 +98,17 @@ BUILTIN_PATTERNS: list[dict] = [
 
 
 class MemoryStore:
-    """Three-tier memory system with Firestore backend and local fallback."""
+    """Four-tier memory system with Firestore backend and local fallback.
 
-    def __init__(self, project_id: str | None = None):
+    Includes embedding-based retrieval for finding similar past experiences
+    across all domains using Gemini's text-embedding model.
+    """
+
+    def __init__(self, project_id: str | None = None, genai_client=None):
         self._firestore = None
         self._local_dir = Path("memory-store")
+        self._genai_client = genai_client  # For embedding generation
+        self._embedding_cache: dict[str, list[float]] = {}  # text -> embedding
 
         if project_id or os.environ.get("GOOGLE_CLOUD_PROJECT"):
             try:
@@ -220,6 +231,142 @@ class MemoryStore:
                 })
 
         return context
+
+    # ─── RETRIEVAL MEMORY (EMBEDDING-BASED) ──────────────────
+
+    async def _get_embedding(self, text: str) -> list[float] | None:
+        """Generate embedding for text using Gemini's embedding model."""
+        if not self._genai_client:
+            return None
+
+        # Check cache
+        if text in self._embedding_cache:
+            return self._embedding_cache[text]
+
+        try:
+            response = await self._genai_client.aio.models.embed_content(
+                model="text-embedding-004",
+                contents=text,
+            )
+            embedding = list(response.embeddings[0].values)
+            self._embedding_cache[text] = embedding
+            return embedding
+        except Exception as e:
+            logger.debug(f"Embedding generation failed: {e}")
+            return None
+
+    async def save_episode_with_embedding(self, entry: EpisodicEntry) -> None:
+        """Save an episode with its embedding for similarity search."""
+        # First save the episode normally
+        await self.save_episode(entry)
+
+        # Then compute and store embedding
+        text = f"{entry.instruction} | {entry.domain} | {'success' if entry.success else 'failed'}"
+        if entry.obstacles:
+            text += f" | obstacles: {', '.join(entry.obstacles[:3])}"
+
+        embedding = await self._get_embedding(text)
+        if embedding is None:
+            return
+
+        embedding_data = {
+            "text": text,
+            "embedding": embedding,
+            "domain": entry.domain,
+            "instruction": entry.instruction,
+            "success": entry.success,
+            "steps_taken": entry.steps_taken,
+            "obstacles": entry.obstacles[:5],
+            "timestamp": entry.timestamp,
+        }
+
+        if self._firestore:
+            try:
+                doc_id = f"emb_{entry.domain}_{int(entry.timestamp)}"
+                await self._firestore.collection("gaxis_embeddings").document(doc_id).set(embedding_data)
+                return
+            except Exception:
+                pass
+
+        # Local fallback
+        self._save_local("embeddings", "all.jsonl", embedding_data)
+
+    async def retrieve_similar(self, query: str, limit: int = 5) -> list[dict]:
+        """Find similar past experiences using embedding cosine similarity.
+
+        Searches across ALL domains — not just the current one.
+        This is the retrieval-based memory strategy.
+        """
+        query_embedding = await self._get_embedding(query)
+        if query_embedding is None:
+            return []
+
+        candidates = []
+
+        # Load all embeddings
+        if self._firestore:
+            try:
+                docs = self._firestore.collection("gaxis_embeddings").stream()
+                async for doc in docs:
+                    data = doc.to_dict()
+                    if "embedding" in data:
+                        candidates.append(data)
+            except Exception:
+                pass
+
+        if not candidates:
+            # Local fallback
+            candidates = self._load_local_embeddings()
+
+        if not candidates:
+            return []
+
+        # Compute cosine similarity and rank
+        scored = []
+        for c in candidates:
+            stored_embedding = c.get("embedding", [])
+            if not stored_embedding:
+                continue
+            similarity = self._cosine_similarity(query_embedding, stored_embedding)
+            scored.append({
+                "instruction": c.get("instruction", ""),
+                "domain": c.get("domain", ""),
+                "success": c.get("success", False),
+                "steps": c.get("steps_taken", 0),
+                "obstacles": c.get("obstacles", []),
+                "similarity": round(similarity, 3),
+                "result": "succeeded" if c.get("success") else "failed",
+            })
+
+        # Sort by similarity (highest first) and return top results
+        scored.sort(key=lambda x: x["similarity"], reverse=True)
+        return scored[:limit]
+
+    @staticmethod
+    def _cosine_similarity(a: list[float], b: list[float]) -> float:
+        """Compute cosine similarity between two vectors."""
+        if len(a) != len(b) or not a:
+            return 0.0
+        dot_product = sum(x * y for x, y in zip(a, b))
+        norm_a = math.sqrt(sum(x * x for x in a))
+        norm_b = math.sqrt(sum(x * x for x in b))
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return dot_product / (norm_a * norm_b)
+
+    def _load_local_embeddings(self) -> list[dict]:
+        """Load all stored embeddings from local storage."""
+        file_path = self._local_dir / "embeddings" / "all.jsonl"
+        if not file_path.exists():
+            return []
+        entries = []
+        for line in file_path.read_text().strip().split("\n"):
+            if line:
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+        return entries
 
     # ─── LOCAL FALLBACK ───────────────────────────────────────
 
