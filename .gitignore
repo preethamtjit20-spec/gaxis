@@ -10,3 +10,4 @@ node_modules/
 screenshots/
 audit-logs/
 .pytest_cache/
+memory-store/
