@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from google import genai
 from google.genai import types
 
-VISION_MODEL = "gemini-2.5-pro-preview-06-05"
+VISION_MODEL = "gemini-2.5-flash"
 
 PERCEPTION_PROMPT = """You are the vision system for G-Axis, a web automation agent.
 

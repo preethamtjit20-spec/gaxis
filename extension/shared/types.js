@@ -48,7 +48,7 @@ export const MSG = {
 // Default settings
 export const DEFAULT_SETTINGS = {
   backendUrl: "http://localhost:8000",
-  model: "gemini-2.5-pro-preview-06-05",
+  model: "gemini-2.5-flash",
   temperature: 0.2,
   maxSteps: 30,
   supervisionMode: "supervised", // supervised | semi-auto | autonomous

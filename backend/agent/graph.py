@@ -118,21 +118,26 @@ class AgentGraph:
                     )
 
                     if decision.verdict == "require_approval":
-                        state.status = "awaiting_approval"
-                        await self._emit_event(state, "approval_needed", {
-                            "step": state.step_index,
-                            "action_type": action.get("action_type"),
-                            "reason": decision.reason,
-                            "risk_level": decision.risk_level,
-                        })
-
-                        if self.approval_fn:
-                            approved = await self.approval_fn()
-                            if not approved:
-                                state.status = "failed"
-                                state.error = "Operator denied action"
-                                break
+                        # In API mode, auto-approve non-critical actions (no human operator)
+                        if state.mode == "api" and decision.risk_level not in ("critical",):
+                            logger.info(f"Auto-approved {action.get('action_type')} in API mode (risk: {decision.risk_level})")
                             self.policy.record_approval(action.get("action_type", ""))
+                        else:
+                            state.status = "awaiting_approval"
+                            await self._emit_event(state, "approval_needed", {
+                                "step": state.step_index,
+                                "action_type": action.get("action_type"),
+                                "reason": decision.reason,
+                                "risk_level": decision.risk_level,
+                            })
+
+                            if self.approval_fn:
+                                approved = await self.approval_fn()
+                                if not approved:
+                                    state.status = "failed"
+                                    state.error = "Operator denied action"
+                                    break
+                                self.policy.record_approval(action.get("action_type", ""))
 
                     elif decision.verdict == "deny":
                         state.status = "failed"

@@ -245,7 +245,7 @@ class MemoryStore:
 
         try:
             response = await self._genai_client.aio.models.embed_content(
-                model="text-embedding-004",
+                model="gemini-embedding-001",
                 contents=text,
             )
             embedding = list(response.embeddings[0].values)

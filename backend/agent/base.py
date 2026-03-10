@@ -20,7 +20,7 @@ from backend.tools.executor import ToolExecutor, ToolResult
 logger = logging.getLogger("gaxis.agent")
 
 # Vision model for agents that need screenshot understanding
-AGENT_MODEL = "gemini-2.5-pro-preview-06-05"
+AGENT_MODEL = "gemini-2.5-flash"
 
 
 class BaseAgent(ABC):
