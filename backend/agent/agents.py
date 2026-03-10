@@ -11,6 +11,7 @@ Each agent has a focused role, system prompt, and tool set:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -97,21 +98,34 @@ class PerceiverAgent(BaseAgent):
                 )
             prompt += dom_hint
 
-        response = await self.client.aio.models.generate_content(
-            model=AGENT_MODEL,
-            contents=[
-                types.Content(parts=[
-                    types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
-                    types.Part.from_text(text=prompt),
-                ])
-            ],
-            config=types.GenerateContentConfig(
-                system_instruction=self.system_prompt,
-                temperature=0.1,
-                max_output_tokens=4096,
-                response_mime_type="application/json",
-            ),
-        )
+        contents = [
+            types.Content(parts=[
+                types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+                types.Part.from_text(text=prompt),
+            ])
+        ]
+
+        # Retry on rate limit
+        for attempt in range(4):
+            try:
+                response = await self.client.aio.models.generate_content(
+                    model=AGENT_MODEL,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=self.system_prompt,
+                        temperature=0.1,
+                        max_output_tokens=4096,
+                        response_mime_type="application/json",
+                    ),
+                )
+                break
+            except Exception as e:
+                if ("429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)) and attempt < 3:
+                    wait = min(2 ** attempt * 5, 30)
+                    logger.warning(f"Perceiver rate limited, waiting {wait}s")
+                    await asyncio.sleep(wait)
+                else:
+                    raise
 
         parsed = _parse_json(response.text or "{}")
 

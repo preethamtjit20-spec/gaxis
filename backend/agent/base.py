@@ -6,6 +6,7 @@ management, and the step() interface used by the graph runner.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 from abc import ABC, abstractmethod
@@ -58,6 +59,32 @@ class BaseAgent(ABC):
         """Process one step in the agent graph. Must be implemented by subclasses."""
         ...
 
+    async def _call_with_retry(
+        self, contents, gemini_tools, max_retries: int = 3,
+    ) -> types.GenerateContentResponse:
+        """Call Gemini with retry on rate limit (429) errors."""
+        for attempt in range(max_retries + 1):
+            try:
+                return await self.client.aio.models.generate_content(
+                    model=AGENT_MODEL,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=self.system_prompt,
+                        temperature=0.2,
+                        max_output_tokens=4096,
+                        tools=gemini_tools,
+                    ),
+                )
+            except Exception as e:
+                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                    wait = min(2 ** attempt * 5, 30)  # 5s, 10s, 20s, 30s
+                    logger.warning(f"[{self.name}] Rate limited, waiting {wait}s (attempt {attempt + 1})")
+                    await asyncio.sleep(wait)
+                    if attempt == max_retries:
+                        raise
+                else:
+                    raise
+
     async def call_gemini(
         self,
         state: AgentState,
@@ -96,16 +123,7 @@ class BaseAgent(ABC):
         if self.tools:
             gemini_tools = [types.Tool(function_declarations=self.tools)]
 
-        response = await self.client.aio.models.generate_content(
-            model=AGENT_MODEL,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=self.system_prompt,
-                temperature=0.2,
-                max_output_tokens=4096,
-                tools=gemini_tools,
-            ),
-        )
+        response = await self._call_with_retry(contents, gemini_tools)
 
         # Save to conversation history
         self._conversation_history.append(user_content)
@@ -236,15 +254,9 @@ class BaseAgent(ABC):
                         state.retries = 0
 
                     # Call Gemini again with the function response
-                    response = await self.client.aio.models.generate_content(
-                        model=AGENT_MODEL,
-                        contents=self._conversation_history,
-                        config=types.GenerateContentConfig(
-                            system_instruction=self.system_prompt,
-                            temperature=0.2,
-                            max_output_tokens=4096,
-                            tools=[types.Tool(function_declarations=self.tools)] if self.tools else None,
-                        ),
+                    gemini_tools = [types.Tool(function_declarations=self.tools)] if self.tools else None
+                    response = await self._call_with_retry(
+                        self._conversation_history, gemini_tools,
                     )
 
                     if response.candidates and response.candidates[0].content:
