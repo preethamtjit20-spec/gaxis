@@ -169,6 +169,7 @@ class ToolExecutor:
             "direction": args.get("direction", "down"),
             "key": args.get("key", ""),
             "pixels": args.get("pixels", 400),
+            "element_description": args.get("element_description", ""),
         }
 
         if emit_fn:
