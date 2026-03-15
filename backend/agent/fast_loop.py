@@ -309,6 +309,14 @@ class FastAgentLoop:
                     "step": 0,
                     "subtask": f"Deterministic: {conn_name}.{skill_name}",
                 })
+                # Set up replay recording for deterministic executor
+                if self._replay:
+                    from backend.connectors import executors as _execs
+                    _execs._replay_ref = self._replay
+                    _execs._replay_task_id = state.task_id
+                    _execs._replay_step_counter = 0
+                    _execs._screenshot_fn = lambda: self._get_latest_screenshot(state)
+
                 result = await self._connector_registry.execute_deterministic(
                     instruction=state.instruction,
                     params=params,
@@ -318,6 +326,12 @@ class FastAgentLoop:
                     mode=state.mode,
                 )
                 if result is not None and result.success:
+                    # Clean up replay recording refs
+                    if self._replay:
+                        from backend.connectors import executors as _execs
+                        _execs._replay_ref = None
+                        _execs._screenshot_fn = None
+
                     # Check if the executor returned a browser_instruction
                     # (semi-deterministic: nav done, LLM finishes the rest)
                     if result.browser_instruction:
@@ -338,13 +352,23 @@ class FastAgentLoop:
                         logger.info(f"⚡ Deterministic complete: {state.result_summary[:80]}")
                         # Navigate to the scheduled date so user can see the event
                         await self._navigate_to_calendar_date(state)
+                        # End replay session and get player data
+                        if self._replay:
+                            self._replay.end_session(state.task_id, "done", state.result_summary)
+                        player_data = self._replay.get_player_data(state.task_id) if self._replay else None
                         await self._emit_event(state, "task_completed", {
                             "summary": state.result_summary,
                             "total_steps": 1,
                             "deterministic": True,
+                            "replay": player_data,
                         })
                         return state
                 elif result is not None:
+                    # Clean up replay recording refs on failure too
+                    if self._replay:
+                        from backend.connectors import executors as _execs
+                        _execs._replay_ref = None
+                        _execs._screenshot_fn = None
                     logger.warning(
                         f"Deterministic execution failed: {result.error} "
                         f"— falling back to state machine"
@@ -725,7 +749,7 @@ class FastAgentLoop:
                             task_id=state.task_id,
                         )
 
-                        # Record to replay timeline
+                        # Record to replay timeline (with screenshot for player)
                         if self._replay:
                             self._replay.record_step(
                                 task_id=state.task_id,
@@ -737,6 +761,7 @@ class FastAgentLoop:
                                 duration_ms=result.duration_ms,
                                 url_before=state.page.url or "",
                                 url_after=state.page.url or "",
+                                screenshot_b64=state.page.screenshot_b64,
                             )
 
                         if result.success:
@@ -1670,6 +1695,13 @@ class FastAgentLoop:
             logger.warning(f"Verify: error ({e}) — accepting claim")
 
         return True  # On error, accept to avoid blocking
+
+    async def _get_latest_screenshot(self, state: AgentState) -> str | None:
+        """Get the latest screenshot, requesting a fresh one if needed."""
+        # Small delay to let extension send the post-action screenshot
+        await asyncio.sleep(0.5)
+        state = await self._capture_page(state)
+        return state.page.screenshot_b64
 
     async def _navigate_to_calendar_date(self, state: AgentState):
         """After a calendar task completes, navigate to the scheduled date so the user can see the event."""

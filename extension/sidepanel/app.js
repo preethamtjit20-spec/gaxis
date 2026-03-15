@@ -96,6 +96,28 @@ const els = {
   completeStats: $("complete-stats"),
   newTaskBtn: $("new-task-btn"),
   cleanupBtn: $("cleanup-btn"),
+  replayPlayer: $("replay-player"),
+  replayCard: $("replay-card"),
+  replayScreenshotWrap: $("replay-screenshot-wrap"),
+  replayScreenshot: $("replay-screenshot"),
+  replayScreenshotOverlay: $("replay-screenshot-overlay"),
+  replayOverlayStep: $("replay-overlay-step"),
+  replayOverlayAction: $("replay-overlay-action"),
+  replayNoScreenshot: $("replay-no-screenshot"),
+  replayStepIcon: $("replay-step-icon"),
+  replayStepTitle: $("replay-step-title"),
+  replayStepDetail: $("replay-step-detail"),
+  replayStepUrl: $("replay-step-url"),
+  replayStepStatus: $("replay-step-status"),
+  replayStepIndicator: $("replay-step-indicator"),
+  replayProgressFill: $("replay-progress-fill"),
+  replayDots: $("replay-dots"),
+  replayPrev: $("replay-prev"),
+  replayPlay: $("replay-play"),
+  replayNext: $("replay-next"),
+  replayPlayIcon: $("replay-play-icon"),
+  replayPauseIcon: $("replay-pause-icon"),
+  replayDuration: $("replay-duration"),
   settingsOverlay: $("settings-overlay"),
   settingsPanel: $("settings-panel"),
   settingsCloseBtn: $("settings-close-btn"),
@@ -157,6 +179,9 @@ let livePlayQueue = [];      // Queued audio buffers for sequential playback
 let livePlayingSource = null; // Currently playing AudioBufferSourceNode
 let stepCount = 0;
 let startTime = 0;
+let narrativeStepNum = 0;
+let lastActionType = "";
+let lastActionGroup = "";
 let currentAgent = null;
 let activitySteps = []; // Array of { label, status: 'pending'|'active'|'done'|'failed' }
 let activityExpanded = false;
@@ -1010,6 +1035,11 @@ function handleMessage(msg) {
     }
 
     case MSG.TASK_COMPLETED: {
+      // Handle duplicate task_completed — second one may have replay data
+      if (appState === "idle" && msg.data?.replay) {
+        initReplayPlayer(msg.data.replay);
+        break;
+      }
       appState = "idle";
       els.loadingDots.classList.add("hidden");
       // Activity tracker: mark all active as done, add final step
@@ -1177,6 +1207,252 @@ function updateAgentAvatar(agentKey) {
     els.agentAvatar.innerHTML = `<div class="agent-pulse-ring"></div><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>`;
   }
   currentAgent = agentKey;
+}
+
+// ─── NARRATIVE ENGINE ─────────────────────────────────────────
+// Transforms raw action types into human-friendly step descriptions
+
+function narrativeDescription(actionType, data) {
+  const url = data?.url || "";
+  const text = data?.text || "";
+  const fields = data?.fields || [];
+  const key = data?.key || "";
+  const elementDesc = data?.element_description || "";
+  const reasoning = data?.reasoning || "";
+
+  switch (actionType) {
+    case "navigate": {
+      let dest = "a new page";
+      if (url.includes("calendar.google.com/calendar")) {
+        if (url.includes("eventedit")) dest = "Calendar event editor";
+        else dest = "Google Calendar";
+      } else if (url.includes("mail.google.com")) dest = "Gmail";
+      else if (url.includes("docs.google.com")) dest = "Google Docs";
+      else if (url.includes("sheets.google.com")) dest = "Google Sheets";
+      else if (url.includes("meet.google.com")) dest = "Google Meet";
+      else if (url.includes("drive.google.com")) dest = "Google Drive";
+      else if (url.includes("youtube.com")) dest = "YouTube";
+      else if (url) {
+        try { dest = new URL(url).hostname.replace("www.", ""); } catch {}
+      }
+      return { title: "Opening workspace", subtitle: `Navigating to ${dest}`, group: "navigate", agentType: "navigator" };
+    }
+    case "fill_form": {
+      const fieldNames = fields.map(f => f.label || f.field || f.name).filter(Boolean);
+      const subtitle = fieldNames.length > 0
+        ? `Filling in ${fieldNames.join(", ")}`
+        : "Filling in form details";
+      return { title: "Filling details", subtitle, group: "fill_form", agentType: "form_filler" };
+    }
+    case "type_text":
+    case "type": {
+      const target = elementDesc || reasoning || "field";
+      return { title: "Entering information", subtitle: `Typing into ${target}`, group: "fill_form", agentType: "form_filler" };
+    }
+    case "click": {
+      const target = elementDesc || reasoning || "element";
+      return { title: "Selecting option", subtitle: `Clicking ${target}`, group: "click", agentType: "navigator" };
+    }
+    case "press_key": {
+      const keyName = key === "Enter" ? "confirm" : key === "Tab" ? "move to next field" : key === "Escape" ? "dismiss" : `press ${key}`;
+      return { title: "Confirming action", subtitle: `Pressing ${key} to ${keyName}`, group: "press_key", agentType: "navigator" };
+    }
+    case "scroll": {
+      const dir = data?.direction || "down";
+      return { title: "Browsing content", subtitle: `Scrolling ${dir} to find more`, group: "scroll", agentType: "navigator" };
+    }
+    case "select_all_and_type": {
+      const target = elementDesc || reasoning || "field";
+      return { title: "Updating field", subtitle: `Replacing text in ${target}`, group: "fill_form", agentType: "form_filler" };
+    }
+    case "wait":
+      return { title: "Waiting", subtitle: "Giving the page a moment to load", group: "wait", agentType: "navigator" };
+    case "workspace_tab":
+      return { title: "Opening workspace", subtitle: reasoning || "Setting up the workspace", group: "navigate", agentType: "orchestrator" };
+    default: {
+      const fallback = reasoning || `Performing ${actionType.replace(/_/g, " ")}`;
+      return { title: actionType.replace(/_/g, " "), subtitle: fallback, group: actionType, agentType: "navigator" };
+    }
+  }
+}
+
+function shouldGroupWithPrevious(actionType, data) {
+  const narrative = narrativeDescription(actionType, data);
+  // Group consecutive actions with the same group (e.g., fill_form + fill_form, fill_form + type_text)
+  return lastActionGroup === narrative.group && narrative.group === "fill_form";
+}
+
+function updateGroupedEntry(narrative) {
+  // Update the last timeline entry's subtitle to reflect accumulated work
+  const entries = els.timeline.querySelectorAll(".timeline-entry");
+  const lastEntry = entries[entries.length - 1];
+  if (lastEntry) {
+    const reasoningEl = lastEntry.querySelector(".reasoning");
+    if (reasoningEl) {
+      reasoningEl.textContent = narrative.subtitle;
+    }
+  }
+}
+
+// ─── EXECUTION REPLAY PLAYER ──────────────────────────────────
+
+let replayData = null;
+let replayIndex = 0;
+let replayPlaying = false;
+let replayTimer = null;
+
+function initReplayPlayer(data) {
+  if (!data || !data.steps || data.steps.length === 0) return;
+  replayData = data;
+  replayIndex = 0;
+  replayPlaying = false;
+
+  els.replayPlayer.classList.remove("hidden");
+  els.replayDuration.textContent = formatDuration(data.duration_ms);
+
+  // Render step dots on timeline
+  els.replayDots.innerHTML = "";
+  data.steps.forEach((s, i) => {
+    const dot = document.createElement("div");
+    dot.className = `replay-dot ${s.success ? "" : "failed"}`;
+    dot.title = `Step ${i + 1}: ${s.action}`;
+    dot.onclick = () => replayGoTo(i);
+    els.replayDots.appendChild(dot);
+  });
+
+  // Bind controls
+  els.replayPrev.onclick = () => replayGoTo(replayIndex - 1);
+  els.replayNext.onclick = () => replayGoTo(replayIndex + 1);
+  els.replayPlay.onclick = toggleReplayPlayback;
+  els.replayProgressFill.parentElement.onclick = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pct = (e.clientX - rect.left) / rect.width;
+    const idx = Math.round(pct * (replayData.steps.length - 1));
+    replayGoTo(idx);
+  };
+
+  renderReplayStep(0);
+}
+
+function replayGoTo(idx) {
+  if (!replayData) return;
+  replayIndex = Math.max(0, Math.min(idx, replayData.steps.length - 1));
+  renderReplayStep(replayIndex);
+}
+
+function toggleReplayPlayback() {
+  if (replayPlaying) {
+    replayPlaying = false;
+    clearInterval(replayTimer);
+    els.replayPlayIcon.classList.remove("hidden");
+    els.replayPauseIcon.classList.add("hidden");
+  } else {
+    replayPlaying = true;
+    els.replayPlayIcon.classList.add("hidden");
+    els.replayPauseIcon.classList.remove("hidden");
+    if (replayIndex >= replayData.steps.length - 1) replayIndex = -1;
+    replayTimer = setInterval(() => {
+      replayIndex++;
+      if (replayIndex >= replayData.steps.length) {
+        replayIndex = replayData.steps.length - 1;
+        toggleReplayPlayback(); // Stop at end
+        return;
+      }
+      renderReplayStep(replayIndex);
+    }, 1500);
+  }
+}
+
+function renderReplayStep(idx) {
+  const step = replayData.steps[idx];
+  if (!step) return;
+
+  const narrative = narrativeDescription(step.action, {
+    action_type: step.action,
+    url: step.args?.url || step.url_after || "",
+    text: step.args?.text || "",
+    fields: step.args?.fields || [],
+    key: step.args?.key || "",
+    element_description: step.description || step.args?.element_description || "",
+    reasoning: step.description || "",
+  });
+
+  // Screenshot (cinematic view)
+  if (step.screenshot) {
+    els.replayScreenshot.src = `data:image/jpeg;base64,${step.screenshot}`;
+    els.replayScreenshot.classList.remove("hidden");
+    els.replayNoScreenshot.classList.add("hidden");
+    // Overlay with step info
+    els.replayOverlayStep.textContent = `Step ${idx + 1}`;
+    els.replayOverlayAction.textContent = narrative.title;
+    els.replayScreenshotOverlay.classList.remove("hidden");
+    // Cinematic transition
+    els.replayScreenshot.classList.remove("replay-screenshot-enter");
+    void els.replayScreenshot.offsetHeight;
+    els.replayScreenshot.classList.add("replay-screenshot-enter");
+  } else {
+    els.replayScreenshot.classList.add("hidden");
+    els.replayScreenshotOverlay.classList.add("hidden");
+    els.replayNoScreenshot.classList.remove("hidden");
+  }
+
+  // Step icon
+  const iconMap = {
+    navigate: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8" fill="currentColor"/></svg>`,
+    click: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3l1 14 4-4 5 7 2-1-5-7h6z"/></svg>`,
+    fill_form: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`,
+    type_text: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01M10 8h8"/></svg>`,
+    press_key: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M7 15h10"/></svg>`,
+    scroll: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7 7 7-7"/></svg>`,
+  };
+
+  els.replayStepIcon.innerHTML = iconMap[step.action] || iconMap.click;
+  els.replayStepTitle.textContent = narrative.title;
+  els.replayStepDetail.textContent = narrative.subtitle;
+
+  // URL
+  if (step.url_after) {
+    try {
+      const hostname = new URL(step.url_after).hostname.replace("www.", "");
+      els.replayStepUrl.textContent = hostname;
+      els.replayStepUrl.classList.remove("hidden");
+    } catch { els.replayStepUrl.classList.add("hidden"); }
+  } else {
+    els.replayStepUrl.classList.add("hidden");
+  }
+
+  // Status
+  els.replayStepStatus.innerHTML = step.success
+    ? `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#34a853" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>`
+    : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ea4335" stroke-width="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>`;
+
+  // Indicator
+  els.replayStepIndicator.textContent = `${idx + 1} / ${replayData.steps.length}`;
+
+  // Progress bar
+  const pct = ((idx + 1) / replayData.steps.length) * 100;
+  els.replayProgressFill.style.width = `${pct}%`;
+
+  // Update dot highlights
+  els.replayDots.querySelectorAll(".replay-dot").forEach((d, i) => {
+    d.classList.toggle("active", i === idx);
+    d.classList.toggle("done", i < idx);
+  });
+
+  // Duration display
+  if (step.duration_ms) {
+    els.replayDuration.textContent = `${step.duration_ms}ms`;
+  }
+
+  // Animate card entrance
+  els.replayCard.classList.remove("replay-card-enter");
+  void els.replayCard.offsetHeight;
+  els.replayCard.classList.add("replay-card-enter");
+}
+
+function formatDuration(ms) {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
 }
 
 function updateStepCounter() {
@@ -1513,6 +1789,11 @@ function showComplete(success, data) {
 
     const summary = data?.summary || "Task completed successfully";
     els.completeSummary.innerHTML = escapeHtml(summary) + "<br><br><small>Want me to do anything else?</small>";
+
+    // Initialize replay player if data available
+    if (data?.replay) {
+      initReplayPlayer(data.replay);
+    }
     setStatus("Complete", "success", "");
     addTimelineEntry("complete", "Done", summary, null, null, "success");
     speakText("All done! " + summary + " Want me to do anything else?");
@@ -1562,6 +1843,10 @@ function resetUI() {
   els.taskInstructionCard.classList.add("hidden");
   els.loadingDots.classList.add("hidden");
   els.cleanupBtn.classList.add("hidden");
+  // Reset replay player
+  els.replayPlayer.classList.add("hidden");
+  replayData = null; replayIndex = 0; replayPlaying = false;
+  if (replayTimer) { clearInterval(replayTimer); replayTimer = null; }
   hideActivityTracker();
   hideOperatorWindow();
   els.taskInput.value = "";

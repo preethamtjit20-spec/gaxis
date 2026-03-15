@@ -549,10 +549,15 @@ class GAxisAgent:
                 state.task_id, "task_completed",
                 {"summary": state.result_summary, "total_steps": state.step_index},
             ))
+            # Include replay player data with completion event
+            player_data = None
+            if self.replay:
+                player_data = self.replay.get_player_data(state.task_id)
             await self._emit(TaskEvent("task_completed", state.task_id, {
                 "summary": state.result_summary,
                 "total_steps": state.step_index,
                 "extracted_data": state.extracted_data,
+                "replay": player_data,
             }))
         else:
             await self.audit.append(create_event(

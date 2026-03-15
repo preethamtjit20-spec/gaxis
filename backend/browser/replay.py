@@ -69,7 +69,7 @@ class ExecutionReplay:
         replay.save(task_id)  # Saves to .replays/ directory
     """
 
-    def __init__(self, replay_dir: str = ".replays", capture_screenshots: bool = False):
+    def __init__(self, replay_dir: str = ".replays", capture_screenshots: bool = True):
         self._sessions: dict[str, ReplaySession] = {}
         self._replay_dir = Path(replay_dir)
         self._capture_screenshots = capture_screenshots
@@ -193,6 +193,43 @@ class ExecutionReplay:
             "actions": actions,
             "result": session.result_summary,
             "error": session.error,
+        }
+
+    def get_player_data(self, task_id: str) -> dict | None:
+        """Get rich replay data for the interactive player UI."""
+        session = self._sessions.get(task_id)
+        if not session:
+            return None
+
+        steps = []
+        for s in session.steps:
+            step_data = {
+                "step": s.step_index,
+                "action": s.action_type,
+                "args": s.args,
+                "success": s.success,
+                "error": s.error,
+                "duration_ms": s.duration_ms,
+                "url_before": s.url_before,
+                "url_after": s.url_after,
+                "timestamp": s.timestamp,
+                "screenshot": s.screenshot_b64,
+                "description": s.args.get("element_description", "")
+                    or s.args.get("text", "")
+                    or s.args.get("url", "")
+                    or s.args.get("key", ""),
+            }
+            steps.append(step_data)
+
+        return {
+            "task_id": session.task_id,
+            "instruction": session.instruction,
+            "status": session.status,
+            "duration_ms": session.duration_ms,
+            "total_steps": len(session.steps),
+            "result": session.result_summary,
+            "error": session.error,
+            "steps": steps,
         }
 
     def load_replay(self, filepath: str) -> ReplaySession | None:

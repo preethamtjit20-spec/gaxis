@@ -28,11 +28,19 @@ logger = logging.getLogger("gaxis.executors")
 
 # ─── HELPERS ──────────────────────────────────────────────────────
 
+_replay_ref = None  # Set by fast_loop before deterministic execution
+_replay_task_id = ""
+_replay_step_counter = 0
+_screenshot_fn = None  # Function to get latest screenshot
+
+
 async def _exec(
     tool_executor, fn_name: str, fn_args: dict,
     mode: str, emit_fn: Any, task_id: str,
 ) -> dict:
     """Execute a single browser action and return the result dict."""
+    global _replay_step_counter
+
     result = await tool_executor.execute(
         function_name=fn_name,
         function_args=fn_args,
@@ -40,6 +48,29 @@ async def _exec(
         emit_fn=emit_fn,
         task_id=task_id,
     )
+
+    # Record to replay with screenshot
+    if _replay_ref and _replay_task_id == task_id:
+        _replay_step_counter += 1
+        screenshot = None
+        if _screenshot_fn:
+            try:
+                screenshot = await _screenshot_fn()
+            except Exception:
+                pass
+        _replay_ref.record_step(
+            task_id=task_id,
+            step_index=_replay_step_counter,
+            action_type=fn_name,
+            args=fn_args,
+            success=result.success,
+            error=result.error,
+            duration_ms=result.duration_ms,
+            url_before="",
+            url_after="",
+            screenshot_b64=screenshot,
+        )
+
     return {
         "success": result.success,
         "error": result.error,

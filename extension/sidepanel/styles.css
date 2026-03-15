@@ -2217,3 +2217,267 @@ header h1 {
   margin: 4px auto;
   max-width: 70%;
 }
+
+/* ─── EXECUTION REPLAY PLAYER ─────────────────────────────── */
+
+.replay-player {
+  margin-top: 16px;
+  background: var(--md-surface-container);
+  border-radius: 16px;
+  padding: 14px;
+  border: 1px solid var(--md-outline-variant);
+  margin-left: -16px;
+  margin-right: -16px;
+  width: calc(100% + 32px);
+}
+
+.replay-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.replay-title {
+  font-family: 'Google Sans', sans-serif;
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--md-on-surface);
+}
+
+.replay-step-indicator {
+  font-family: 'Google Sans Text', sans-serif;
+  font-size: 12px;
+  color: var(--md-on-surface-variant);
+  background: var(--md-surface-container-high);
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+/* Screenshot viewer */
+.replay-screenshot-wrap {
+  position: relative;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #1a1a1a;
+  margin-bottom: 10px;
+}
+
+.replay-screenshot {
+  width: 100%;
+  display: block;
+  border-radius: 10px;
+  transition: opacity 0.3s ease;
+}
+
+.replay-screenshot-enter {
+  animation: replayFadeIn 0.4s ease;
+}
+
+@keyframes replayFadeIn {
+  from { opacity: 0; transform: scale(1.02); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.replay-screenshot-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 10px 12px;
+  background: linear-gradient(transparent, rgba(0,0,0,0.7));
+  color: white;
+  pointer-events: none;
+}
+
+.replay-overlay-step {
+  font-family: 'Google Sans', sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0.8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.replay-overlay-action {
+  font-family: 'Google Sans', sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.replay-no-screenshot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  color: var(--md-on-surface-variant);
+  font-size: 12px;
+  font-family: 'Google Sans Text', sans-serif;
+}
+
+/* Step dots on timeline */
+.replay-dots {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 2px 0;
+}
+
+.replay-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--md-surface-container-high);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.replay-dot.done {
+  background: var(--md-primary);
+  opacity: 0.5;
+}
+
+.replay-dot.active {
+  background: var(--md-primary);
+  transform: scale(1.4);
+  opacity: 1;
+}
+
+.replay-dot.failed {
+  background: #ea4335;
+}
+
+.replay-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--md-surface);
+  border-radius: 12px;
+  padding: 14px;
+  min-height: 60px;
+  border: 1px solid var(--md-outline-variant);
+  transition: all 0.2s ease;
+}
+
+.replay-card-enter {
+  animation: replaySlideIn 0.3s ease;
+}
+
+@keyframes replaySlideIn {
+  from { opacity: 0; transform: translateX(10px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.replay-step-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: var(--md-primary-container);
+  color: var(--md-on-primary-container);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.replay-step-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.replay-step-title {
+  font-family: 'Google Sans', sans-serif;
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--md-on-surface);
+  margin-bottom: 2px;
+}
+
+.replay-step-detail {
+  font-family: 'Google Sans Text', sans-serif;
+  font-size: 12px;
+  color: var(--md-on-surface-variant);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.replay-step-url {
+  font-family: 'Google Sans Text', sans-serif;
+  font-size: 11px;
+  color: var(--md-primary);
+  margin-top: 2px;
+}
+
+.replay-step-status {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.replay-timeline {
+  margin: 12px 0;
+}
+
+.replay-progress {
+  height: 4px;
+  background: var(--md-surface-container-high);
+  border-radius: 2px;
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+}
+
+.replay-progress-fill {
+  height: 100%;
+  background: var(--md-primary);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+  min-width: 0;
+}
+
+.replay-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.replay-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--md-on-surface);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+
+.replay-btn:hover {
+  background: var(--md-surface-container-high);
+}
+
+.replay-play-btn {
+  width: 44px;
+  height: 44px;
+  background: var(--md-primary);
+  color: var(--md-on-primary);
+}
+
+.replay-play-btn:hover {
+  background: var(--md-primary);
+  opacity: 0.9;
+}
+
+.replay-duration {
+  font-family: 'Google Sans Text', sans-serif;
+  font-size: 11px;
+  color: var(--md-on-surface-variant);
+  margin-left: auto;
+}
