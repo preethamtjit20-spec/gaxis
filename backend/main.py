@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
+from pydantic import BaseModel
 
 from backend.agent.core import GAxisAgent, TaskEvent
 from backend.agent.live_session import LiveSession
@@ -592,3 +593,21 @@ async def download_doc(filename: str):
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         filename=filename,
     )
+
+
+class TranscriptRequest(BaseModel):
+    title: str
+    content: str
+
+
+@app.post("/api/save-transcript")
+async def save_transcript(req: TranscriptRequest):
+    """Save a voice conversation transcript as .docx."""
+    from backend.tools.doc_converter import markdown_to_docx
+    try:
+        filepath = markdown_to_docx(req.content, req.title)
+        filename = os.path.basename(filepath)
+        download_url = f"http://localhost:{os.environ.get('PORT', '8000')}/api/doc/{filename}"
+        return JSONResponse({"success": True, "download_url": download_url, "filename": filename})
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)

@@ -118,6 +118,13 @@ const els = {
   replayPlayIcon: $("replay-play-icon"),
   replayPauseIcon: $("replay-pause-icon"),
   replayDuration: $("replay-duration"),
+  // Voice UI
+  voiceSection: $("voice-section"),
+  voiceOrb: $("voice-orb"),
+  voiceStatusText: $("voice-status-text"),
+  voiceTranscriptLive: $("voice-transcript-live"),
+  voiceTranscript: $("voice-transcript"),
+  voiceEndBtn: $("voice-end-btn"),
   settingsOverlay: $("settings-overlay"),
   settingsPanel: $("settings-panel"),
   settingsCloseBtn: $("settings-close-btn"),
@@ -1161,30 +1168,49 @@ function handleMessage(msg) {
 
     // ── Live Audio ──
     case MSG.LIVE_AUDIO_OUT:
-      if (liveMode && msg.data) playLiveAudioChunk(msg.data);
+      if (liveMode && msg.data) {
+        playLiveAudioChunk(msg.data);
+        // Orb → speaking state
+        els.voiceOrb.className = "voice-orb speaking";
+        els.voiceStatusText.textContent = "Speaking...";
+      }
       break;
 
     case MSG.LIVE_TRANSCRIPT_IN:
       if (msg.data?.text) {
-        addChatMessage("user", msg.data.text);
+        addVoiceBubble("user", msg.data.text);
+        els.voiceTranscriptLive.textContent = "";
+        // Back to listening after user speaks
+        els.voiceOrb.className = "voice-orb listening";
+        els.voiceStatusText.textContent = "Listening...";
       }
       break;
 
     case MSG.LIVE_TRANSCRIPT_OUT:
       if (msg.data?.text) {
-        addChatMessage("agent", msg.data.text);
+        addVoiceBubble("agent", msg.data.text);
+        // Back to listening after agent finishes
+        setTimeout(() => {
+          if (liveMode && isRecording) {
+            els.voiceOrb.className = "voice-orb listening";
+            els.voiceStatusText.textContent = "Listening...";
+          }
+        }, 500);
       }
       break;
 
     case MSG.LIVE_STATUS: {
       const st = msg.data?.status;
       if (st === "connected") {
-        addTimelineEntry("success", "Live Audio", "Connected — listening...");
+        els.voiceOrb.className = "voice-orb listening";
+        els.voiceStatusText.textContent = "Listening...";
       } else if (st === "error") {
-        addTimelineEntry("error", "Live Audio Error", msg.data?.message || "Connection failed");
+        els.voiceOrb.className = "voice-orb idle";
+        els.voiceStatusText.textContent = "Connection failed";
         stopLiveMode();
       } else if (st === "disconnected") {
-        addTimelineEntry("info", "Live Audio", "Session ended");
+        els.voiceOrb.className = "voice-orb idle";
+        els.voiceStatusText.textContent = "Session ended";
       }
       break;
     }
@@ -2344,15 +2370,14 @@ function advanceOperatorPlan(actionType, reasoning) {
 
 // ─── VOICE INPUT / GEMINI LIVE AUDIO ─────────────────────────
 
+let voiceTranscriptHistory = []; // Save all transcripts for export
+
 function toggleVoice() {
   if (isRecording) {
-    // Mic is on — stop mic but keep live session active for text
     stopMic();
   } else if (liveMode) {
-    // Live session active but mic off — start mic
     startMic();
   } else {
-    // Nothing active — start live session + mic
     startLiveMode();
   }
 }
@@ -2379,10 +2404,23 @@ async function startLiveSession() {
   safeSend({ type: MSG.LIVE_START });
 
   liveMode = true;
+  voiceTranscriptHistory = [];
 
-  // Show chat section for transcripts
-  els.chatSection.classList.remove("hidden");
+  // Show voice UI
+  els.voiceSection.classList.remove("hidden");
   els.welcomeSection.classList.add("hidden");
+  els.chatSection.classList.add("hidden");
+  els.completeSection.classList.add("hidden");
+  els.statusSection.classList.add("hidden");
+  els.voiceOrb.className = "voice-orb connecting";
+  els.voiceStatusText.textContent = "Connecting...";
+  els.voiceTranscript.innerHTML = "";
+  els.voiceTranscriptLive.textContent = "";
+
+  // Bind end button
+  els.voiceEndBtn.onclick = () => {
+    endVoiceSession();
+  };
 }
 
 /** Start mic streaming into the live session. */
@@ -2424,7 +2462,8 @@ async function startMic() {
   isRecording = true;
   els.voiceBtn.classList.add("recording", "live-mode");
   els.voiceBtn.title = "Stop microphone";
-  addChatMessage("system", "Live audio connected — start speaking!");
+  els.voiceOrb.className = "voice-orb listening";
+  els.voiceStatusText.textContent = "Listening...";
 }
 
 /** Stop mic but keep live session active (can still type). */
@@ -2440,11 +2479,77 @@ function stopMic() {
   }
   els.voiceBtn.classList.remove("recording", "live-mode");
   els.voiceBtn.title = "Start microphone";
+  if (liveMode) {
+    els.voiceOrb.className = "voice-orb idle";
+    els.voiceStatusText.textContent = "Mic paused — tap mic to resume";
+  }
 }
 
 /** Backward-compatible wrapper — starts live session + mic. */
 async function startLiveMode() {
   await startMic();
+}
+
+function addVoiceBubble(role, text) {
+  const bubble = document.createElement("div");
+  bubble.className = `voice-bubble ${role}`;
+  const label = role === "user" ? "You" : "G-Axis";
+  bubble.innerHTML = `<div class="bubble-label">${label}</div>${escapeHtml(text)}`;
+  els.voiceTranscript.appendChild(bubble);
+  els.voiceTranscript.scrollTop = els.voiceTranscript.scrollHeight;
+
+  // Save to history
+  voiceTranscriptHistory.push({
+    role, text,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+async function endVoiceSession() {
+  stopLiveMode();
+
+  // Hide voice UI, show welcome
+  els.voiceSection.classList.add("hidden");
+  els.welcomeSection.classList.remove("hidden");
+
+  // Save transcript to Google Docs if there's content
+  if (voiceTranscriptHistory.length > 0) {
+    try {
+      const title = `G-Axis Conversation — ${new Date().toLocaleDateString()}`;
+      let markdown = `# ${title}\n\n`;
+      for (const entry of voiceTranscriptHistory) {
+        const label = entry.role === "user" ? "**You**" : "**G-Axis**";
+        markdown += `${label}: ${entry.text}\n\n`;
+      }
+
+      // Send to backend to create .docx and upload
+      safeSend({
+        type: MSG.RUN_TASK,
+        instruction: `__save_transcript__`,
+        data: { title, markdown },
+      });
+
+      // Also save via research_complete flow
+      const resp = await fetch(`http://localhost:${location.port || 8000}/api/save-transcript`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, content: markdown }),
+      }).catch(() => null);
+
+      if (resp?.ok) {
+        const result = await resp.json();
+        // Upload to Drive if we have a download URL
+        if (result.download_url) {
+          safeSend({
+            type: "research_complete_internal",
+            data: { title, download_url: result.download_url, filename: result.filename },
+          });
+        }
+      }
+    } catch (err) {
+      console.error("[G-Axis] Transcript save failed:", err);
+    }
+  }
 }
 
 function stopLiveMode() {
@@ -2469,6 +2574,8 @@ function stopLiveMode() {
 
   els.voiceBtn.classList.remove("recording", "live-mode");
   els.voiceBtn.title = "Voice input";
+  els.voiceOrb.className = "voice-orb idle";
+  els.voiceStatusText.textContent = "Session ended";
 }
 
 function playLiveAudioChunk(base64Pcm) {

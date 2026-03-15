@@ -2653,3 +2653,224 @@ header h1 {
 .research-download-btn:hover {
   opacity: 0.9;
 }
+
+/* ─── VOICE LISTENING UI ──────────────────────────────── */
+
+.voice-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px 20px 20px;
+  gap: 16px;
+}
+
+/* Animated orb */
+.voice-orb {
+  position: relative;
+  width: 100px;
+  height: 100px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.voice-orb-core {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--md-primary);
+  color: var(--md-on-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  transition: transform 0.3s ease, background 0.3s ease;
+}
+
+.voice-orb-ring {
+  position: absolute;
+  border-radius: 50%;
+  border: 2px solid var(--md-primary);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.ring-1 { width: 72px; height: 72px; }
+.ring-2 { width: 84px; height: 84px; }
+.ring-3 { width: 96px; height: 96px; }
+
+/* Idle state */
+.voice-orb.idle .voice-orb-core {
+  background: var(--md-surface-container-high);
+  color: var(--md-on-surface-variant);
+}
+
+/* Listening state — breathing pulse */
+.voice-orb.listening .voice-orb-core {
+  background: var(--md-primary);
+  animation: voice-breathe 2s ease-in-out infinite;
+}
+
+.voice-orb.listening .voice-orb-ring {
+  opacity: 1;
+  border-color: var(--md-primary);
+}
+
+.voice-orb.listening .ring-1 {
+  animation: voice-ring-pulse 2s ease-in-out infinite;
+  opacity: 0.4;
+}
+
+.voice-orb.listening .ring-2 {
+  animation: voice-ring-pulse 2s ease-in-out infinite 0.3s;
+  opacity: 0.25;
+}
+
+.voice-orb.listening .ring-3 {
+  animation: voice-ring-pulse 2s ease-in-out infinite 0.6s;
+  opacity: 0.15;
+}
+
+/* Speaking state — active pulse */
+.voice-orb.speaking .voice-orb-core {
+  background: #34a853;
+  animation: voice-speak-pulse 0.6s ease-in-out infinite alternate;
+}
+
+.voice-orb.speaking .voice-orb-ring {
+  opacity: 1;
+  border-color: #34a853;
+}
+
+.voice-orb.speaking .ring-1 {
+  animation: voice-speak-ring 0.8s ease-in-out infinite alternate;
+  opacity: 0.5;
+}
+
+.voice-orb.speaking .ring-2 {
+  animation: voice-speak-ring 0.8s ease-in-out infinite alternate 0.15s;
+  opacity: 0.3;
+}
+
+.voice-orb.speaking .ring-3 {
+  animation: voice-speak-ring 0.8s ease-in-out infinite alternate 0.3s;
+  opacity: 0.15;
+}
+
+/* Connecting state */
+.voice-orb.connecting .voice-orb-core {
+  background: var(--md-primary);
+  animation: voice-spin 1.5s linear infinite;
+}
+
+@keyframes voice-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.08); }
+}
+
+@keyframes voice-ring-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.4; }
+  50% { transform: scale(1.12); opacity: 0.1; }
+}
+
+@keyframes voice-speak-pulse {
+  from { transform: scale(1); }
+  to { transform: scale(1.12); }
+}
+
+@keyframes voice-speak-ring {
+  from { transform: scale(1); opacity: 0.5; }
+  to { transform: scale(1.15); opacity: 0.1; }
+}
+
+@keyframes voice-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Status text */
+.voice-status-text {
+  font-family: 'Google Sans', sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--md-on-surface);
+  text-align: center;
+}
+
+/* Live transcript (what's being said right now) */
+.voice-transcript-live {
+  font-family: 'Google Sans Text', sans-serif;
+  font-size: 13px;
+  color: var(--md-primary);
+  text-align: center;
+  min-height: 20px;
+  font-style: italic;
+  max-width: 280px;
+}
+
+/* Conversation transcript */
+.voice-transcript {
+  padding: 0 16px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.voice-bubble {
+  padding: 10px 14px;
+  border-radius: 14px;
+  margin: 6px 0;
+  font-family: 'Google Sans Text', sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  animation: fadeSlideIn 0.2s ease;
+  max-width: 85%;
+}
+
+.voice-bubble.user {
+  background: var(--md-primary-container);
+  color: var(--md-on-primary-container);
+  margin-left: auto;
+  border-bottom-right-radius: 4px;
+}
+
+.voice-bubble.agent {
+  background: var(--md-surface-container);
+  color: var(--md-on-surface);
+  margin-right: auto;
+  border-bottom-left-radius: 4px;
+  border: 1px solid var(--md-outline-variant);
+}
+
+.voice-bubble .bubble-label {
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  opacity: 0.6;
+  margin-bottom: 2px;
+}
+
+/* Actions */
+.voice-actions {
+  display: flex;
+  justify-content: center;
+  padding: 12px;
+}
+
+.voice-end-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 20px;
+  border: none;
+  border-radius: 20px;
+  background: var(--md-error-container);
+  color: var(--md-error);
+  font-family: 'Google Sans Text', sans-serif;
+  font-size: 13px;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.voice-end-btn:hover {
+  opacity: 0.85;
+}
