@@ -336,6 +336,8 @@ class FastAgentLoop:
                             + ", ".join(f"{k}={v}" for k, v in result.data.items() if v)
                         )
                         logger.info(f"⚡ Deterministic complete: {state.result_summary[:80]}")
+                        # Navigate to the scheduled date so user can see the event
+                        await self._navigate_to_calendar_date(state)
                         await self._emit_event(state, "task_completed", {
                             "summary": state.result_summary,
                             "total_steps": 1,
@@ -595,6 +597,8 @@ class FastAgentLoop:
                             if verified:
                                 state.result_summary = claimed_summary
                                 state.status = "done"
+                                # Navigate to the scheduled date so user can see the event
+                                await self._navigate_to_calendar_date(state)
                             else:
                                 # Verification failed — tell agent to keep going
                                 logger.warning("Verification failed — agent claimed done but page doesn't confirm")
@@ -1002,6 +1006,9 @@ class FastAgentLoop:
             f"⚡ Deterministic execution complete: {graph.app_id} "
             f"in {elapsed_ms}ms ({state.step_index} steps)"
         )
+
+        # Navigate to the scheduled date so user can see the event
+        await self._navigate_to_calendar_date(state)
 
         await self._emit_event(state, "task_done", {
             "summary": summary,
@@ -1663,6 +1670,76 @@ class FastAgentLoop:
             logger.warning(f"Verify: error ({e}) — accepting claim")
 
         return True  # On error, accept to avoid blocking
+
+    async def _navigate_to_calendar_date(self, state: AgentState):
+        """After a calendar task completes, navigate to the scheduled date so the user can see the event."""
+        import re as _re
+        from datetime import datetime, timedelta
+
+        # Only for calendar-related tasks
+        cal_keywords = ["schedule", "calendar", "event", "meeting", "appointment"]
+        if not any(kw in state.instruction.lower() for kw in cal_keywords):
+            return
+
+        # Try to extract date from planner slots, extracted data, or cached task values
+        date_str = None
+        sources = [
+            state.task.planner_slots if state.task and state.task.planner_slots else {},
+            state.extracted_data or {},
+            self._cached_task_values or {},
+        ]
+        for src in sources:
+            for key in ("start_date", "date", "event_date"):
+                if key in src and src[key]:
+                    date_str = src[key]
+                    break
+            if date_str:
+                break
+
+        if not date_str:
+            return
+
+        # Parse date — try multiple formats
+        target_date = None
+        formats = ["%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%B %d, %Y", "%B %d %Y", "%b %d, %Y", "%b %d %Y"]
+        for fmt in formats:
+            try:
+                target_date = datetime.strptime(date_str.strip(), fmt)
+                break
+            except ValueError:
+                continue
+        if not target_date:
+            # Try month-day only (no year)
+            for fmt in ["%B %d", "%b %d"]:
+                try:
+                    target_date = datetime.strptime(date_str.strip(), fmt)
+                    target_date = target_date.replace(year=datetime.now().year)
+                    break
+                except ValueError:
+                    continue
+        if not target_date:
+            if "tomorrow" in date_str.lower():
+                target_date = datetime.now() + timedelta(days=1)
+            elif "today" in date_str.lower():
+                target_date = datetime.now()
+
+        if not target_date:
+            return
+
+        # Navigate to calendar day view for that date
+        cal_url = (
+            f"https://calendar.google.com/calendar/u/0/r/day/"
+            f"{target_date.year}/{target_date.month}/{target_date.day}"
+        )
+        logger.info(f"Navigating to calendar date: {cal_url}")
+        try:
+            await self.tool_executor.execute(
+                "navigate", {"url": cal_url},
+                mode=state.mode, emit_fn=self.emit_fn, task_id=state.task_id,
+            )
+            await asyncio.sleep(1.5)  # Let the page load
+        except Exception as e:
+            logger.warning(f"Calendar date navigation failed: {e}")
 
     def _format_dom(self, elements: list[dict]) -> str:
         lines = []
