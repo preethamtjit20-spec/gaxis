@@ -20,13 +20,14 @@ import time
 from google import genai
 from google.genai import types
 
-from backend.agent.base import BaseAgent, AGENT_MODEL
+from backend.agent.base import BaseAgent, AGENT_MODEL, VISION_MODEL
 from backend.agent.state import AgentState, SubTask
 from backend.tools.definitions import (
-    ORCHESTRATOR_TOOLS, NAVIGATOR_TOOLS, FORM_FILLER_TOOLS,
+    PLANNER_TOOLS, ORCHESTRATOR_TOOLS, NAVIGATOR_TOOLS, FORM_FILLER_TOOLS,
     DATA_EXTRACTOR_TOOLS, VERIFIER_TOOLS,
 )
 from backend.tools.executor import ToolExecutor
+from backend.observability.logger import obs
 
 logger = logging.getLogger("gaxis.agents")
 
@@ -53,7 +54,7 @@ Also provide:
 - "page_summary": 1-2 sentence summary of the page
 - "current_state": what state the page is in
 
-The viewport is 1280x720 pixels.
+The viewport size varies. Use the DOM element coordinates when available for precise positions.
 
 Return ONLY valid JSON:
 {"page_summary": "...", "current_state": "...", "elements": [...]}"""
@@ -64,6 +65,7 @@ class PerceiverAgent(BaseAgent):
 
     Does NOT use tools — just vision analysis via structured JSON output.
     """
+    _model_override = VISION_MODEL  # Pro for accurate screenshot analysis
 
     def __init__(self, client: genai.Client, tool_executor: ToolExecutor, emit_fn=None):
         super().__init__(
@@ -109,7 +111,7 @@ class PerceiverAgent(BaseAgent):
         for attempt in range(4):
             try:
                 response = await self.client.aio.models.generate_content(
-                    model=AGENT_MODEL,
+                    model=VISION_MODEL,
                     contents=contents,
                     config=types.GenerateContentConfig(
                         system_instruction=self.system_prompt,
@@ -134,46 +136,126 @@ class PerceiverAgent(BaseAgent):
         state.page.elements = parsed.get("elements", [])
         state.page.timestamp = time.time()
 
-        logger.info(
-            f"Perceiver: {state.page.page_summary} | "
-            f"{len(state.page.elements)} elements detected"
+        obs.action("perceiver", "analyze",
+                   target=state.page.url[:50],
+                   reason=state.page.page_summary[:60],
+                   success=True,
+                   elements=len(state.page.elements))
+        return state
+
+
+# ─── PLANNER AGENT ─────────────────────────────────────────────
+
+PLANNER_SYSTEM = """You are the Planner for G-Axis — an AI that decomposes user tasks into subtasks.
+
+YOUR ONLY JOB: Break a task into an ordered sequence of subtasks, each assigned to a specialist.
+
+SPECIALISTS:
+- navigator: clicks, types, navigates pages, fills forms
+- data_extractor: reads and extracts structured data from pages
+- verifier: confirms task completed successfully
+
+TASK TYPES AND STRATEGIES:
+
+1. SIMPLE ACTION (calendar, email, form):
+   → navigator handles everything (1-2 subtasks + verifier)
+
+2. RESEARCH (itinerary, comparison, analysis):
+   → navigator: search → navigate to sources (1 per source)
+   → data_extractor: extract key information
+   → navigator: create document with synthesized content
+   → verifier: confirm deliverable
+
+3. MULTI-STEP WORKFLOW:
+   → Break into sequential subtasks, one per phase
+
+RULES:
+- Return subtasks via plan_task() tool
+- Each subtask = one focused action for one specialist
+- Include a verifier subtask at the end
+- Navigator handles both navigation AND form filling
+- Keep instructions specific: exact URLs, field names, values
+- For research: read AT LEAST 3 sources before synthesizing
+"""
+
+
+class PlannerAgent(BaseAgent):
+    """Task decomposition — breaks complex tasks into ordered subtasks.
+
+    Responsibilities: strategy, subtask planning, sequencing
+    Does NOT: delegate, supervise, recover from errors
+    """
+
+    def __init__(self, client: genai.Client, tool_executor: ToolExecutor, emit_fn=None):
+        super().__init__(
+            name="planner",
+            client=client,
+            tool_executor=tool_executor,
+            tools=PLANNER_TOOLS,
+            system_prompt=PLANNER_SYSTEM,
+            emit_fn=emit_fn,
         )
+
+    async def step(self, state: AgentState) -> AgentState:
+        """Decompose the task into subtasks. Runs ONCE at the start."""
+        state.status = "orchestrating"
+
+        from datetime import datetime
+        today = datetime.now().strftime("%A, %B %d, %Y")
+
+        context = self._build_page_context_prompt(state)
+
+        # Memory hints for better planning
+        memory_text = ""
+        if state.memory_context:
+            if state.memory_context.get("similar_experiences"):
+                memory_text = "\nSIMILAR PAST TASKS:\n"
+                for exp in state.memory_context["similar_experiences"][:3]:
+                    memory_text += f"  - \"{exp.get('instruction', '?')}\" → {exp.get('result', '?')}\n"
+
+        prompt = (
+            f"TASK: {state.instruction}\n"
+            f"TODAY: {today}\n\n"
+            f"{context}\n"
+            f"{memory_text}\n"
+            f"Decompose this task into subtasks using plan_task()."
+        )
+
+        state, _ = await self.call_gemini_with_tool_loop(
+            state, prompt, max_tool_calls=1, include_screenshot=True,
+        )
+
         return state
 
 
 # ─── ORCHESTRATOR ──────────────────────────────────────────────
 
-ORCHESTRATOR_SYSTEM = """You are the Orchestrator for G-Axis, an AI browser agent with supervised autonomy.
+ORCHESTRATOR_SYSTEM = """You are the Orchestrator for G-Axis — you execute subtasks by delegating to specialists.
 
-Your role: Break down user tasks into subtasks and delegate to specialist agents.
+YOUR ONLY JOB: Take the NEXT pending subtask and delegate it to the right specialist.
 
-AVAILABLE SPECIALISTS:
-- navigator: Page navigation — clicking links, buttons, scrolling, going to URLs. Use for any page traversal.
-- form_filler: Form interaction — typing into fields, selecting options, submitting forms. Use when data needs to be entered.
-- data_extractor: Data extraction — reading and structuring data from pages. Use when the user wants information gathered.
-- verifier: Verification — checking if a task was completed correctly. Use at the end to confirm success.
+TOOLS: delegate() to assign work, task_failed() if stuck.
 
-STRATEGY:
-1. Look at the current page and the user's task.
-2. Determine what needs to happen NEXT (one step at a time).
-3. Delegate to the most appropriate specialist using the delegate() tool.
-4. If the page already shows the desired result, call task_complete().
+FLOW:
+1. Look at SUBTASK PROGRESS to find the next pending subtask.
+2. Delegate it to the specialist with clear, specific instructions.
+3. After it completes, the system advances to the next subtask automatically.
 
 RULES:
-- Delegate ONE subtask at a time. You'll be called again after it completes.
-- Always consider the current page state — don't repeat completed work.
-- If the task requires searching, delegate to navigator first.
-- If a form needs filling, delegate to form_filler.
-- For reading/comparing data, delegate to data_extractor.
-- Use verifier at the end to confirm the task is truly done.
-- If previous actions show errors, adjust your strategy.
-- If you see the task is already complete from the page content, call task_complete() directly.
-
-MEMORY CONTEXT (if available) will be provided. Use it to avoid past mistakes."""
+- ONE delegation per turn. Never skip subtasks.
+- Include specific details: URLs, field names, values, step-by-step instructions.
+- If a subtask failed, try an alternative approach before calling task_failed.
+- If AVAILABLE SKILLS provide step-by-step browser instructions, copy them VERBATIM.
+- The planner already decomposed the task — do NOT re-plan. Just execute in order.
+"""
 
 
 class OrchestratorAgent(BaseAgent):
-    """Decomposes tasks and delegates to specialist agents."""
+    """Executes subtasks by delegating to specialists.
+
+    Responsibilities: delegation, execution supervision, error recovery
+    Does NOT: plan, decompose tasks, confirm actions (state machine handles that)
+    """
 
     def __init__(self, client: genai.Client, tool_executor: ToolExecutor, emit_fn=None):
         super().__init__(
@@ -184,33 +266,13 @@ class OrchestratorAgent(BaseAgent):
             system_prompt=ORCHESTRATOR_SYSTEM,
             emit_fn=emit_fn,
         )
+        # Connector registry — injected by core after creation
+        self.connector_registry = None
 
     async def step(self, state: AgentState) -> AgentState:
         state.status = "orchestrating"
 
-        # Build context for the orchestrator
         context = self._build_page_context_prompt(state)
-
-        # Include memory context
-        memory_text = ""
-        if state.memory_context:
-            if state.memory_context.get("past_episodes"):
-                memory_text += "\nMEMORY (past experiences):\n"
-                for ep in state.memory_context["past_episodes"][:3]:
-                    status = "succeeded" if ep.get("success") else "failed"
-                    memory_text += f"  - \"{ep.get('instruction', '?')}\" {status} in {ep.get('steps', '?')} steps\n"
-                    if ep.get("obstacles"):
-                        memory_text += f"    Obstacles: {', '.join(ep['obstacles'][:2])}\n"
-
-            if state.memory_context.get("known_patterns"):
-                memory_text += "\nKNOWN PATTERNS:\n"
-                for p in state.memory_context["known_patterns"][:5]:
-                    memory_text += f"  - {p.get('name', '?')}: {p.get('description', '?')}\n"
-
-            if state.memory_context.get("similar_experiences"):
-                memory_text += "\nSIMILAR PAST TASKS:\n"
-                for exp in state.memory_context["similar_experiences"][:3]:
-                    memory_text += f"  - \"{exp.get('instruction', '?')}\" → {exp.get('result', '?')}\n"
 
         # Current subtask progress
         subtask_text = ""
@@ -222,16 +284,43 @@ class OrchestratorAgent(BaseAgent):
                 if st.result:
                     subtask_text += f"    Result: {st.result}\n"
 
+        # Connector skills context
+        connector_text = ""
+        if self.connector_registry:
+            routing = self.connector_registry.get_skill_routing_hints(state.instruction)
+            if routing.get("has_skills"):
+                relevant_skills = self.connector_registry.find_skills(state.instruction)
+                connector_text = "\n\nAVAILABLE SKILLS:\n"
+                for skill_obj in relevant_skills[:3]:
+                    connector_text += f"\n--- {skill_obj.full_name} ---\n"
+                    if skill_obj.browser_template:
+                        connector_text += f"INSTRUCTIONS:\n{skill_obj.browser_template}\n"
+
+        # If navigator claimed completion
+        navigator_claim = getattr(state, '_navigator_claim', '')
+        claim_text = ""
+        if navigator_claim:
+            claim_text = f"\n⚠️ NAVIGATOR CLAIMS DONE: \"{navigator_claim}\"\nDelegate to verifier to confirm.\n"
+            state._navigator_claim = ""
+
+        # UI Graph context for known apps
+        ui_graph_context = ""
+        ui_graph_text = getattr(state, '_ui_graph_text', '')
+        if ui_graph_text:
+            ui_graph_context = f"\n\n{ui_graph_text}\n"
+
         prompt = (
             f"TASK: {state.instruction}\n\n"
             f"{context}\n"
-            f"{memory_text}\n"
             f"{subtask_text}\n"
-            f"Step {state.step_index} of {state.max_steps}. "
-            f"What should happen NEXT? Delegate to a specialist or complete the task."
+            f"{claim_text}\n"
+            f"{ui_graph_context}\n"
+            f"{connector_text}\n"
+            f"Step {state.step_index}/{state.max_steps}. "
+            f"Delegate the next pending subtask."
         )
 
-        state, response_text = await self.call_gemini_with_tool_loop(
+        state, _ = await self.call_gemini_with_tool_loop(
             state, prompt, max_tool_calls=3, include_screenshot=True,
         )
 
@@ -240,35 +329,42 @@ class OrchestratorAgent(BaseAgent):
 
 # ─── NAVIGATOR ─────────────────────────────────────────────────
 
-NAVIGATOR_SYSTEM = """You are the Navigator for G-Axis, an AI browser agent.
+NAVIGATOR_SYSTEM = """You are the Navigator for G-Axis, a browser agent.
 
-Your role: Navigate web pages by clicking links, buttons, scrolling, and going to URLs.
-
-You can see the page screenshot and DOM element positions. Use the tools to interact:
-- click(x, y): Click at coordinates
-- navigate(url): Go to a URL
-- scroll(direction, pixels): Scroll up or down
-- press_key(key): Press Enter, Tab, Escape, etc.
-- hover(x, y): Hover over an element
-- wait(seconds, reason): Wait for page to load
-
-STRATEGY:
-- Use DOM element coordinates when available — they're more precise than visual estimation.
-- If you see the target element in DOM ELEMENTS, use its exact (x, y) coordinates.
-- Click search buttons, links, and navigation elements to reach the desired page.
-- After clicking, the page may need time to load — use wait() if needed.
-- Call task_complete() when you've reached the target page or completed the navigation.
+TOOLS:
+- navigate(url): Go to a URL. USE THIS FIRST for any site.
+- click(x, y, element_description): Click at coordinates.
+- type_text(x, y, text, press_enter): Type text. Set press_enter=true to submit.
+- scroll(direction, pixels): Scroll the page.
+- press_key(key): Press a key (Tab, Escape, etc).
+- hover(x, y): Hover over element.
+- wait(seconds, reason): Wait for page load.
 
 RULES:
-- Execute ONE action at a time. You'll get a new screenshot after each action.
-- Don't navigate to URLs you can't see on the page or that aren't well-known.
-- If an element isn't visible, scroll to find it.
-- If a click doesn't work, try a slightly different approach (hover first, or use keyboard).
-- Mark password/payment actions as needing care."""
+1. navigate(url) FIRST when told to go to a URL. Always.
+2. ONE action per turn. You get a new screenshot after each action.
+3. Use DOM coordinates when available — more precise than guessing.
+4. For search: navigate to site → type_text with press_enter=true.
+5. Verify your action worked by checking the next screenshot.
+6. Don't overwrite existing content (templates, headers) unless asked.
+7. If stuck after 2 tries, try a different approach.
+8. CHECK ACTION MEMORY before every action. If a field is already filled, SKIP IT.
+   If a button was already clicked, don't click it again unless the screenshot shows it didn't work.
+
+SPEED TIPS — avoid slow date/time pickers:
+- For DATE fields: click the date input, use clear_first=true, and TYPE the date in MM/DD/YYYY format (e.g. "03/21/2026"). Press Tab to move to next field.
+- For TIME fields: click the time input, clear it, and TYPE the time in 12-hour format without spaces (e.g. "5:30pm", "10:00am"). Press Tab to confirm.
+- NEVER click through month/day arrows on a date picker — always type dates directly.
+- For Google Calendar: use the URL format https://calendar.google.com/calendar/u/0/r/eventedit to create events. Type into each field directly.
+
+POPUPS: Click "Accept"/"Allow"/"Use my location". If permission needed, call task_failed asking user to grant it.
+LOGIN: If login required, call task_failed asking user to sign in.
+CAPTCHA: call task_failed asking user to solve it."""
 
 
 class NavigatorAgent(BaseAgent):
     """Handles page navigation — clicking, scrolling, navigating to URLs."""
+    _model_override = VISION_MODEL  # Pro for precise coordinate picking + tool calls
 
     def __init__(self, client: genai.Client, tool_executor: ToolExecutor, emit_fn=None):
         super().__init__(
@@ -288,23 +384,62 @@ class NavigatorAgent(BaseAgent):
 
         instruction = current_subtask.instruction if current_subtask else state.instruction
 
+        from datetime import datetime
+        today = datetime.now().strftime("%A, %B %d, %Y")
+
+        # Inject UI Graph context for known apps (Calendar, Gmail, etc.)
+        ui_graph_hint = ""
+        ui_graph_text = getattr(state, '_ui_graph_text', '')
+        if ui_graph_text:
+            ui_graph_hint = (
+                f"\n\n{ui_graph_text}\n\n"
+                f"IMPORTANT: Follow the UI GRAPH above for field locations and interaction order.\n"
+                f"- TITLE is the large input at the VERY TOP (placeholder='Add title').\n"
+                f"- DATE/TIME are CHIP buttons in ROW 2 below the title.\n"
+                f"- For CHIP fields: click the chip → type with clear_first=true → press Tab or Enter.\n"
+                f"- Do NOT type dates or times into the title field.\n"
+            )
+
+        # Navigator action memory — what's already done
+        nav_memory_text = ""
+        memory_prompt = state.navigator_memory.to_prompt()
+        if memory_prompt:
+            nav_memory_text = f"\n\n── ACTION MEMORY ──\n{memory_prompt}\n"
+
         prompt = (
-            f"NAVIGATION TASK: {instruction}\n\n"
-            f"{context}\n\n"
-            f"Take the next action to navigate toward the goal. "
-            f"If you've reached the target, call task_complete()."
+            f"TASK: {instruction}\n\n"
+            f"TODAY'S DATE: {today}\n\n"
+            f"{context}\n"
+            f"{ui_graph_hint}\n"
+            f"{nav_memory_text}\n"
+            f"Take the SINGLE best next action. Do NOT repeat actions listed in ACTION MEMORY.\n"
+            f"If a field is already FILLED, skip it. If a button was already CLICKED, don't click it again.\n"
+            f"For date fields: TYPE in MM/DD/YYYY format (e.g. '03/15/2026') with clear_first=true. For time fields: TYPE in 12hr format (e.g. '5:30pm'). NEVER use date picker arrows."
         )
 
         state, response_text = await self.call_gemini_with_tool_loop(
-            state, prompt, max_tool_calls=3, include_screenshot=True,
+            state, prompt, max_tool_calls=5, include_screenshot=True,
         )
 
-        # If the agent completed, mark subtask done
+        # If the agent completed, mark subtask done and go DIRECTLY to verifier
         if state.result_summary and current_subtask:
             current_subtask.status = "done"
             current_subtask.result = state.result_summary
-            state.result_summary = ""  # Reset — only orchestrator sets final summary
-            state.current_agent = "orchestrator"
+            # Route directly to verifier — skip orchestrator to avoid loops
+            state._pending_verification = state.result_summary
+            state.result_summary = ""
+            state.current_agent = "verifier"
+            obs.transition("navigator", to_agent="verifier",
+                           reason="subtask completed", task_id=state.task_id,
+                           step=state.step_index)
+            # Emit event for decoupled routing
+            from backend.agent.events import EventType
+            await self.emit_event(
+                EventType.SUBTASK_COMPLETED,
+                task_id=state.task_id,
+                summary=current_subtask.result,
+                subtask_index=current_subtask.index,
+            )
 
         return state
 
@@ -323,6 +458,7 @@ Available tools:
 - wait(seconds, reason): Wait for form validation or page updates.
 
 STRATEGY:
+- OBSERVE FIRST: Read the screenshot carefully. What fields exist? What's already filled in? Don't overwrite existing valid data.
 - Use DOM elements for precise field locations.
 - For each field: click to focus → type the text.
 - Use clear_first=true when the field already has text you need to replace.
@@ -334,11 +470,13 @@ RULES:
 - Fill fields one at a time. You'll get a new screenshot after each action.
 - Password and payment fields are SENSITIVE — flag high risk.
 - Don't guess form values — use what the task specifies.
-- If a dropdown needs to be opened first, click it, wait for options, then click the right option."""
+- If a dropdown needs to be opened first, click it, wait for options, then click the right option.
+- NEVER overwrite template content (headers, formulas, charts) unless explicitly asked."""
 
 
 class FormFillerAgent(BaseAgent):
     """Handles form interactions — typing, selecting, submitting."""
+    _model_override = VISION_MODEL  # Pro for accurate form field targeting
 
     def __init__(self, client: genai.Client, tool_executor: ToolExecutor, emit_fn=None):
         super().__init__(
@@ -358,10 +496,33 @@ class FormFillerAgent(BaseAgent):
 
         instruction = current_subtask.instruction if current_subtask else state.instruction
 
+        from datetime import datetime
+        today = datetime.now().strftime("%A, %B %d, %Y")
+
+        # Inject UI Graph context for known apps
+        ui_graph_hint = ""
+        ui_graph_text = getattr(state, '_ui_graph_text', '')
+        if ui_graph_text:
+            ui_graph_hint = (
+                f"\n\n{ui_graph_text}\n\n"
+                f"IMPORTANT: Follow the UI GRAPH above for field locations and interaction order.\n"
+                f"- For CHIP fields (date/time): click the chip → type with clear_first=true → press Tab or Enter.\n"
+                f"- Fill fields in the SEQUENCE specified in the graph.\n"
+            )
+
+        # Action memory — what fields are already filled
+        nav_memory_text = ""
+        memory_prompt = state.navigator_memory.to_prompt()
+        if memory_prompt:
+            nav_memory_text = f"\n\n── ACTION MEMORY ──\n{memory_prompt}\n"
+
         prompt = (
             f"FORM TASK: {instruction}\n\n"
-            f"{context}\n\n"
-            f"Fill the form fields as needed. Call task_complete() when done."
+            f"TODAY'S DATE: {today}\n\n"
+            f"{context}\n"
+            f"{ui_graph_hint}\n"
+            f"{nav_memory_text}\n"
+            f"Fill ONLY fields NOT listed in ACTION MEMORY. Call task_complete() when done."
         )
 
         state, response_text = await self.call_gemini_with_tool_loop(
@@ -371,8 +532,19 @@ class FormFillerAgent(BaseAgent):
         if state.result_summary and current_subtask:
             current_subtask.status = "done"
             current_subtask.result = state.result_summary
+            state._pending_verification = state.result_summary
             state.result_summary = ""
-            state.current_agent = "orchestrator"
+            state.current_agent = "verifier"
+            obs.transition("form_filler", to_agent="verifier",
+                           reason="form submitted", task_id=state.task_id,
+                           step=state.step_index)
+            from backend.agent.events import EventType
+            await self.emit_event(
+                EventType.FORM_SUBMITTED,
+                task_id=state.task_id,
+                summary=current_subtask.result,
+                subtask_index=current_subtask.index,
+            )
 
         return state
 
@@ -448,26 +620,47 @@ class DataExtractorAgent(BaseAgent):
 
 VERIFIER_SYSTEM = """You are the Verifier for G-Axis, an AI browser agent.
 
-Your role: Check if a task was completed correctly by examining the current page state.
+Your role: CRITICALLY check if a task was completed correctly by examining the current page screenshot.
 
 Available tools:
 - scroll(direction): Scroll to see more of the page.
 - click(x, y): Click to reveal details for verification.
 - extract_data(description, data): Extract data for comparison.
-- task_complete(summary): Confirm the task is done with a final summary.
-- task_failed(reason): Report that the task was NOT completed.
+- task_complete(summary): Confirm the task is FULLY done with a final summary.
+- task_partial(summary, missing): The task is PARTIALLY done — core action succeeded but specific details are wrong or missing.
+- task_failed(reason): The task was NOT completed at all.
 
-STRATEGY:
-- Compare the current page state to what the original task asked for.
-- Check if the expected result is visible on the page.
-- Scroll down if needed to see the full result.
-- If the task asked for data, verify the extracted data is correct and complete.
-- Provide a clear summary of the verification result.
+VERIFICATION PROCESS:
+1. READ the original task carefully — what EXACTLY was asked?
+2. EXAMINE the screenshot — what is ACTUALLY on the page right now?
+3. COMPARE: Does the page state match what the task required?
+4. CHECK for damage: Was any existing content accidentally overwritten or corrupted?
+5. Scroll if needed to see the full result.
+
+WHAT TO CHECK:
+- If task was "create X": Is X actually created and visible? Is it properly structured?
+- If task was "fill form with Y": Are the fields actually filled with the correct values?
+- If task was "search for Z": Are search results for Z visible?
+- If task was "open template": Is the template intact? Were headers/formatting preserved?
+- If existing content was present: Was it accidentally overwritten or damaged?
+
+WHEN TO USE EACH:
+- task_complete: Everything matches — all required fields are correct, all actions succeeded.
+- task_partial: The CORE action was done but specific items are missing or wrong.
+  Example: Calendar event created with correct title/date BUT guest was not added.
+  Example: Email sent BUT CC recipient was missing.
+  For each missing item, provide: field (what's missing), expected (what it should be),
+  actual (what's shown, or empty string), fix_instruction (how to fix it).
+- task_failed: The core action was NOT done at all. Wrong page, nothing created, total failure.
 
 RULES:
-- Be honest — if the task isn't actually done, report it.
-- Include specific details in your summary (what was found, numbers, names).
-- Don't just rubber-stamp — actually verify by looking at the page."""
+- Be SKEPTICAL — assume the task is NOT done until you prove it IS.
+- Actually READ text on the screen — don't just accept that actions were taken.
+- If a specialist claimed to type "Amount" into C1, CHECK if C1 actually says "Amount" AND if that was the right thing to do.
+- If a template was opened, verify its original structure is intact.
+- Include specific details in your summary (cell values, visible text, page state).
+- If the task was done but existing content was damaged, report task_failed with what went wrong.
+- PREFER task_partial over task_failed when the main action succeeded but details are off."""
 
 
 class VerifierAgent(BaseAgent):
@@ -502,19 +695,50 @@ class VerifierAgent(BaseAgent):
         if state.extracted_data:
             extracted = f"\nEXTRACTED DATA:\n{json.dumps(state.extracted_data, indent=2)}\n"
 
+        pending = getattr(state, '_pending_verification', '')
+        claim_text = ""
+        if pending:
+            claim_text = f"\nNAVIGATOR CLAIMS: \"{pending}\"\n"
+            state._pending_verification = ""
+
         prompt = (
             f"ORIGINAL TASK: {state.instruction}\n\n"
             f"{context}\n"
             f"{subtask_summary}\n"
+            f"{claim_text}\n"
             f"{extracted}\n"
-            f"VERIFY: Is this task complete? Check the page carefully.\n"
-            f"If done, call task_complete() with a detailed summary.\n"
-            f"If NOT done, call task_failed() explaining what's missing."
+            f"VERIFY by examining the screenshot. You MUST call task_complete() or task_failed() — do NOT scroll or click unless absolutely needed.\n"
+            f"1. What EXACTLY does the page show right now?\n"
+            f"2. Does it match what the original task asked for?\n"
+            f"If done correctly: call task_complete(summary='...')\n"
+            f"If NOT done: call task_failed(reason='...')"
         )
 
         state, response_text = await self.call_gemini_with_tool_loop(
             state, prompt, max_tool_calls=3, include_screenshot=True,
         )
+
+        # Emit verification result events
+        from backend.agent.events import EventType
+        if state.runtime.partial_result:
+            await self.emit_event(
+                EventType.VERIFICATION_PARTIAL,
+                task_id=state.task_id,
+                summary=state.runtime.partial_result.get("summary", ""),
+                missing=state.runtime.partial_result.get("missing", []),
+            )
+        elif state.result_summary:
+            await self.emit_event(
+                EventType.VERIFICATION_PASSED,
+                task_id=state.task_id,
+                summary=state.result_summary,
+            )
+        elif state.status == "failed":
+            await self.emit_event(
+                EventType.VERIFICATION_FAILED,
+                task_id=state.task_id,
+                error=state.error or "Verification failed",
+            )
 
         return state
 

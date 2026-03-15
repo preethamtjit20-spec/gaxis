@@ -11,8 +11,11 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, asdict
+import logging
 from pathlib import Path
 from typing import Literal
+
+logger = logging.getLogger("gaxis.audit")
 
 
 AuditEventType = Literal[
@@ -50,8 +53,8 @@ class AuditStore:
                 self._firestore = firestore.AsyncClient(
                     project=project_id or os.environ.get("GOOGLE_CLOUD_PROJECT")
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Firestore init failed, using local fallback: {e}")
 
     async def append(self, event: AuditEvent) -> None:
         event_dict = asdict(event)
@@ -63,8 +66,8 @@ class AuditStore:
                 doc_ref = collection.document(event.id)
                 await doc_ref.set(event_dict)
                 return
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Firestore audit write failed, falling back to local: {e}")
 
         # Fallback to local file
         self._local_dir.mkdir(exist_ok=True)
@@ -85,8 +88,8 @@ class AuditStore:
                     data = doc.to_dict()
                     events.append(AuditEvent(**data))
                 return events
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Firestore audit read failed, falling back to local: {e}")
 
         # Fallback to local
         file_path = self._local_dir / f"{task_id}.jsonl"

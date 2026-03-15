@@ -116,8 +116,8 @@ class MemoryStore:
                 self._firestore = firestore.AsyncClient(
                     project=project_id or os.environ.get("GOOGLE_CLOUD_PROJECT")
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Firestore memory init failed, using local fallback: {e}")
 
     # ─── EPISODIC MEMORY ──────────────────────────────────────
 
@@ -128,8 +128,8 @@ class MemoryStore:
                 doc_id = f"{entry.domain}_{int(entry.timestamp)}"
                 await self._firestore.collection("gaxis_episodic").document(doc_id).set(data)
                 return
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Firestore episodic save failed, falling back to local: {e}")
         self._save_local("episodic", f"{entry.domain}.jsonl", data)
 
     async def recall_episodes(self, domain: str, limit: int = 5) -> list[EpisodicEntry]:
@@ -145,8 +145,8 @@ class MemoryStore:
                 async for doc in query.stream():
                     entries.append(EpisodicEntry(**doc.to_dict()))
                 return entries
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Firestore episodic recall failed, falling back to local: {e}")
         return self._load_local_episodes(domain, limit)
 
     # ─── SEMANTIC MEMORY ──────────────────────────────────────
@@ -162,8 +162,8 @@ class MemoryStore:
                 async for doc in docs:
                     data = doc.to_dict()
                     patterns.append(SemanticPattern(**data))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Firestore semantic read failed: {e}")
         else:
             learned = self._load_local_patterns()
             patterns.extend(learned)
@@ -176,8 +176,8 @@ class MemoryStore:
             try:
                 await self._firestore.collection("gaxis_semantic").document(pattern.pattern_id).set(data)
                 return
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Firestore semantic write failed, falling back to local: {e}")
         self._save_local("semantic", "patterns.jsonl", data)
 
     async def update_pattern_confidence(self, pattern_id: str, success: bool) -> None:
@@ -245,7 +245,7 @@ class MemoryStore:
 
         try:
             response = await self._genai_client.aio.models.embed_content(
-                model="gemini-embedding-001",
+                model="gemini-embedding-2-preview",
                 contents=text,
             )
             embedding = list(response.embeddings[0].values)
@@ -285,8 +285,8 @@ class MemoryStore:
                 doc_id = f"emb_{entry.domain}_{int(entry.timestamp)}"
                 await self._firestore.collection("gaxis_embeddings").document(doc_id).set(embedding_data)
                 return
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Firestore embedding save failed, falling back to local: {e}")
 
         # Local fallback
         self._save_local("embeddings", "all.jsonl", embedding_data)
@@ -311,8 +311,8 @@ class MemoryStore:
                     data = doc.to_dict()
                     if "embedding" in data:
                         candidates.append(data)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Firestore embedding retrieval failed, falling back to local: {e}")
 
         if not candidates:
             # Local fallback

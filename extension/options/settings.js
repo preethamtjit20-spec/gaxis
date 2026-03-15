@@ -8,17 +8,22 @@ const $ = (id) => document.getElementById(id);
 
 let settings = { ...DEFAULT_SETTINGS };
 
+function extOk() { return !!(chrome.runtime && chrome.runtime.id); }
+
 // ─── LOAD ─────────────────────────────────────────────────────
 
 async function loadSettings() {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage({ type: MSG.GET_SETTINGS }, (response) => {
-      if (response?.settings) {
-        settings = { ...DEFAULT_SETTINGS, ...response.settings };
-      }
-      populateUI();
-      resolve();
-    });
+    if (!extOk()) { populateUI(); resolve(); return; }
+    try {
+      chrome.runtime.sendMessage({ type: MSG.GET_SETTINGS }, (response) => {
+        if (response?.settings) {
+          settings = { ...DEFAULT_SETTINGS, ...response.settings };
+        }
+        populateUI();
+        resolve();
+      });
+    } catch { populateUI(); resolve(); }
   });
 }
 
@@ -68,10 +73,13 @@ function gatherSettings() {
 
 async function saveSettings() {
   const newSettings = gatherSettings();
-  chrome.runtime.sendMessage({ type: MSG.SAVE_SETTINGS, settings: newSettings }, () => {
-    $("save-status").textContent = "Saved!";
-    setTimeout(() => ($("save-status").textContent = ""), 2000);
-  });
+  if (!extOk()) return;
+  try {
+    chrome.runtime.sendMessage({ type: MSG.SAVE_SETTINGS, settings: newSettings }, () => {
+      $("save-status").textContent = "Saved!";
+      setTimeout(() => ($("save-status").textContent = ""), 2000);
+    });
+  } catch {}
 }
 
 // ─── TEST CONNECTION ──────────────────────────────────────────

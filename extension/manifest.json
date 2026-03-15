@@ -10,15 +10,15 @@
     "tabs",
     "scripting",
     "cookies",
-    "webNavigation"
+    "webNavigation",
+    "alarms",
+    "tabGroups",
+    "debugger"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background/service-worker.js",
     "type": "module"
-  },
-  "side_panel": {
-    "default_path": "sidepanel/index.html"
   },
   "content_scripts": [
     {

@@ -3,9 +3,46 @@
  *
  * Handles user interaction, voice input, and displays agent state
  * in real-time via messages from the background service worker.
+ * Material Design 3 themed with smooth animations.
  */
 
 import { MSG } from "../shared/types.js";
+
+/** Check if extension context is still valid */
+function extOk() {
+  return !!(chrome.runtime && chrome.runtime.id);
+}
+
+/** Safe sendMessage wrapper — no-ops if extension context is dead */
+function safeSend(msg, callback) {
+  if (!extOk()) return;
+  try {
+    if (callback) {
+      chrome.runtime.sendMessage(msg, callback);
+    } else {
+      chrome.runtime.sendMessage(msg);
+    }
+  } catch {
+    // Extension context invalidated
+  }
+}
+
+// Keep service worker alive while side panel is open
+// Also receives messages from service worker via port (more reliable than runtime.sendMessage)
+let keepAlivePort = null;
+try {
+  if (extOk()) {
+    keepAlivePort = chrome.runtime.connect({ name: "keepalive" });
+    keepAlivePort.onMessage.addListener((msg) => {
+      handleMessage(msg);
+    });
+    keepAlivePort.onDisconnect.addListener(() => {
+      keepAlivePort = null;
+    });
+  }
+} catch {
+  // Extension context invalidated on load
+}
 
 // ─── DOM ELEMENTS ─────────────────────────────────────────────
 
@@ -17,11 +54,27 @@ const els = {
   taskInput: $("task-input"),
   voiceBtn: $("voice-btn"),
   sendBtn: $("send-btn"),
+  attachBtn: $("attach-btn"),
+  connectorsBtn: $("connectors-btn"),
+  skillsBtn: $("skills-btn"),
+  connectorsPanel: $("connectors-panel"),
+  connectorsPanelClose: $("connectors-panel-close"),
+  connectorsIcons: $("connectors-icons"),
   suggestions: $("suggestions"),
+  welcomeSection: $("welcome-section"),
   statusSection: $("status-section"),
+  agentStatusCard: $("agent-status-card"),
+  agentAvatar: $("agent-avatar"),
   statusText: $("status-text"),
+  agentSubtitle: $("agent-subtitle"),
+  taskInstructionCard: $("task-instruction-card"),
   taskInstruction: $("task-instruction"),
+  loadingDots: $("loading-dots"),
   stopBtn: $("stop-btn"),
+  pauseBtn: $("pause-btn"),
+  resumeBtn: $("resume-btn"),
+  takeoverBtn: $("takeover-btn"),
+  givebackBtn: $("giveback-btn"),
   screenshotContainer: $("screenshot-container"),
   screenshotImg: $("screenshot-img"),
   approvalSection: $("approval-section"),
@@ -31,35 +84,143 @@ const els = {
   approvalConfidence: $("approval-confidence"),
   approveBtn: $("approve-btn"),
   denyBtn: $("deny-btn"),
-  inputSection: $("input-section"),
+  inputBar: $("input-bar"),
+  chatSection: $("chat-section"),
+  chatMessages: $("chat-messages"),
   timeline: $("timeline"),
   timelineSection: $("timeline-section"),
+  stepCounter: $("step-counter"),
   completeSection: $("complete-section"),
   completeIcon: $("complete-icon"),
   completeSummary: $("complete-summary"),
   completeStats: $("complete-stats"),
   newTaskBtn: $("new-task-btn"),
+  cleanupBtn: $("cleanup-btn"),
+  settingsOverlay: $("settings-overlay"),
+  settingsPanel: $("settings-panel"),
+  settingsCloseBtn: $("settings-close-btn"),
+  settingsSaveBtn: $("settings-save-btn"),
+  contentArea: $("content-area"),
+  confirmSection: $("confirm-section"),
+  confirmCard: $("confirm-card"),
+  confirmIcon: $("confirm-icon"),
+  confirmTitle: $("confirm-title"),
+  confirmFields: $("confirm-fields"),
+  confirmCreateBtn: $("confirm-create-btn"),
+  confirmCancelBtn: $("confirm-cancel-btn"),
+  confirmDragHandle: $("confirm-drag-handle"),
+  confirmPinBtn: $("confirm-pin-btn"),
+  operatorWindow: $("operator-window"),
+  operatorTitle: $("operator-title"),
+  operatorStatusBadge: $("operator-status-badge"),
+  operatorActions: $("operator-actions"),
+  operatorMessage: $("operator-message"),
+  operatorMessageText: $("operator-message-text"),
+  activityTracker: $("activity-tracker"),
+  activityBar: $("activity-bar"),
+  activityToggle: $("activity-toggle"),
+  activitySteps: $("activity-steps"),
+  activityIcon: $("activity-icon"),
+  activityLabel: $("activity-label"),
+  activityCounter: $("activity-counter"),
+};
+
+// Settings elements
+const settingEls = {
+  backendUrl: $("setting-backendUrl"),
+  model: $("setting-model"),
+  temperature: $("setting-temperature"),
+  temperatureValue: $("temperature-value"),
+  maxSteps: $("setting-maxSteps"),
+  maxStepsValue: $("maxSteps-value"),
+  confidenceThreshold: $("setting-confidenceThreshold"),
+  confidenceThresholdValue: $("confidenceThreshold-value"),
+  alwaysApprovePasswords: $("setting-alwaysApprovePasswords"),
+  alwaysApprovePayments: $("setting-alwaysApprovePayments"),
+  allowDownloads: $("setting-allowDownloads"),
 };
 
 // ─── STATE ────────────────────────────────────────────────────
 
-let isRunning = false;
+// Single state machine — only one can be active at a time
+// idle → planning → running → idle (or → needs_input → running)
+let appState = "idle"; // "idle" | "planning" | "running" | "needs_input" | "paused" | "takeover"
+let planExecuteInstruction = "";  // Refined instruction from planner
+let plannerTimeout = null;
 let recognition = null;
 let isRecording = false;
+let liveMode = false;        // Gemini Live Audio active
+let liveAudioCtx = null;     // AudioContext for mic capture (16kHz)
+let livePlayCtx = null;      // AudioContext for playback (24kHz)
+let liveMicStream = null;    // MediaStream from getUserMedia
+let livePlayQueue = [];      // Queued audio buffers for sequential playback
+let livePlayingSource = null; // Currently playing AudioBufferSourceNode
 let stepCount = 0;
 let startTime = 0;
+let currentAgent = null;
+let activitySteps = []; // Array of { label, status: 'pending'|'active'|'done'|'failed' }
+let activityExpanded = false;
+let operatorActions = []; // Array of { label, value, status: 'pending'|'active'|'done'|'failed' }
+
+// ─── AGENT CONFIG ─────────────────────────────────────────────
+
+const AGENT_CONFIG = {
+  perceiver: {
+    name: "Perceiver",
+    color: "#1a73e8",
+    icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M2 12s4-8 10-8 10 8 10 8-4 8-10 8-10-8-10-8z"/></svg>`,
+    class: "perceiver",
+  },
+  orchestrator: {
+    name: "Orchestrator",
+    color: "#9334e6",
+    icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>`,
+    class: "orchestrator",
+  },
+  navigator: {
+    name: "Navigator",
+    color: "#e8710a",
+    icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>`,
+    class: "navigator",
+  },
+  form_filler: {
+    name: "Form Filler",
+    color: "#34a853",
+    icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`,
+    class: "form-filler",
+  },
+  data_extractor: {
+    name: "Data Extractor",
+    color: "#ea4335",
+    icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`,
+    class: "data-extractor",
+  },
+  verifier: {
+    name: "Verifier",
+    color: "#f9ab00",
+    icon: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>`,
+    class: "verifier",
+  },
+};
 
 // ─── INITIALIZE ───────────────────────────────────────────────
 
 function init() {
+  console.log("[G-Axis] init() called");
+
   // Connect to backend
-  chrome.runtime.sendMessage({ type: MSG.CONNECT });
+  safeSend({ type: MSG.CONNECT });
 
-  // Input handling
-  els.taskInput.addEventListener("input", () => {
+  // Input handling — multiple events for robustness
+  const updateSendBtn = () => {
     els.sendBtn.disabled = !els.taskInput.value.trim();
-  });
+  };
+  els.taskInput.addEventListener("input", updateSendBtn);
+  els.taskInput.addEventListener("keyup", updateSendBtn);
+  els.taskInput.addEventListener("change", updateSendBtn);
+  els.taskInput.addEventListener("focus", updateSendBtn);
 
+  // Textarea: Enter sends, Shift+Enter newline
   els.taskInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -67,16 +228,77 @@ function init() {
     }
   });
 
+  // Auto-resize textarea as user types
+  els.taskInput.addEventListener("input", () => {
+    autoResizeTextarea();
+  });
+
   els.sendBtn.addEventListener("click", runTask);
   els.stopBtn.addEventListener("click", stopTask);
+  els.pauseBtn.addEventListener("click", pauseTask);
+  els.resumeBtn.addEventListener("click", resumeTask);
+  els.takeoverBtn.addEventListener("click", takeoverControl);
+  els.givebackBtn.addEventListener("click", giveBackControl);
   els.voiceBtn.addEventListener("click", toggleVoice);
+
+  // Connector panel toggle
+  els.connectorsBtn.addEventListener("click", toggleConnectorsPanel);
+  els.connectorsPanelClose.addEventListener("click", () => {
+    els.connectorsPanel.classList.add("hidden");
+    els.connectorsBtn.classList.remove("active");
+  });
+
+  // Connector icon clicks — insert context into textarea
+  els.connectorsIcons.addEventListener("click", (e) => {
+    const btn = e.target.closest(".connector-icon-btn");
+    if (!btn) return;
+    const connector = btn.dataset.connector;
+    btn.classList.toggle("selected");
+    // Prepend connector hint to input if not already there
+    const prefix = `@${connector} `;
+    if (!els.taskInput.value.startsWith(prefix)) {
+      els.taskInput.value = prefix + els.taskInput.value;
+      els.taskInput.focus();
+      autoResizeTextarea();
+      updateSendBtn();
+    }
+  });
   els.approveBtn.addEventListener("click", () => sendApproval(true));
   els.denyBtn.addEventListener("click", () => sendApproval(false));
   els.newTaskBtn.addEventListener("click", resetUI);
-  els.settingsBtn.addEventListener("click", () => chrome.runtime.openOptionsPage());
+  els.cleanupBtn.addEventListener("click", () => {
+    safeSend({ type: MSG.CLEANUP_WORKSPACE });
+    els.cleanupBtn.textContent = "Cleaned up!";
+    els.cleanupBtn.disabled = true;
+    addTimelineEntry("approved", "Workspace cleaned", "Closed all agent-created tabs");
+    setTimeout(() => {
+      els.cleanupBtn.classList.add("hidden");
+      els.cleanupBtn.textContent = "Clean up workspace";
+      els.cleanupBtn.disabled = false;
+    }, 2000);
+  });
+
+  // Settings
+  els.settingsBtn.addEventListener("click", openSettings);
+  els.settingsCloseBtn.addEventListener("click", closeSettings);
+  els.settingsOverlay.addEventListener("click", (e) => {
+    if (e.target === els.settingsOverlay) closeSettings();
+  });
+  els.settingsSaveBtn.addEventListener("click", saveSettings);
+
+  // Range input live values
+  settingEls.temperature.addEventListener("input", () => {
+    settingEls.temperatureValue.textContent = settingEls.temperature.value;
+  });
+  settingEls.maxSteps.addEventListener("input", () => {
+    settingEls.maxStepsValue.textContent = settingEls.maxSteps.value;
+  });
+  settingEls.confidenceThreshold.addEventListener("input", () => {
+    settingEls.confidenceThresholdValue.textContent = settingEls.confidenceThreshold.value;
+  });
 
   // Suggestion buttons
-  els.suggestions.querySelectorAll(".suggestion").forEach((btn) => {
+  document.querySelectorAll(".suggestion-chip").forEach((btn) => {
     btn.addEventListener("click", () => {
       els.taskInput.value = btn.dataset.task;
       els.sendBtn.disabled = false;
@@ -84,47 +306,582 @@ function init() {
     });
   });
 
+  // Activity tracker
+  initActivityTracker();
+
   // Listen for messages from background
-  chrome.runtime.onMessage.addListener(handleMessage);
+  if (extOk()) {
+    try { chrome.runtime.onMessage.addListener(handleMessage); } catch {}
+  }
+}
+
+// ─── SETTINGS ─────────────────────────────────────────────────
+
+function openSettings() {
+  // Load current settings from storage
+  safeSend({ type: MSG.GET_SETTINGS }, (response) => {
+    if (response?.settings) {
+      populateSettings(response.settings);
+    }
+  });
+
+  els.settingsOverlay.classList.remove("hidden");
+  // Force reflow then add visible class for animation
+  void els.settingsOverlay.offsetWidth;
+  els.settingsOverlay.classList.add("visible");
+}
+
+function closeSettings() {
+  els.settingsOverlay.classList.remove("visible");
+  setTimeout(() => {
+    els.settingsOverlay.classList.add("hidden");
+  }, 300);
+}
+
+function populateSettings(settings) {
+  settingEls.backendUrl.value = settings.backendUrl || "http://localhost:8000";
+  settingEls.model.value = settings.model || "gemini-2.5-flash";
+  settingEls.temperature.value = settings.temperature ?? 0.2;
+  settingEls.temperatureValue.textContent = settings.temperature ?? 0.2;
+  settingEls.maxSteps.value = settings.maxSteps ?? 30;
+  settingEls.maxStepsValue.textContent = settings.maxSteps ?? 30;
+  settingEls.confidenceThreshold.value = settings.confidenceThreshold ?? 0.4;
+  settingEls.confidenceThresholdValue.textContent = settings.confidenceThreshold ?? 0.4;
+
+  settingEls.alwaysApprovePasswords.checked = settings.alwaysApprovePasswords ?? true;
+  settingEls.alwaysApprovePayments.checked = settings.alwaysApprovePayments ?? true;
+  settingEls.allowDownloads.checked = settings.allowDownloads ?? false;
+
+  // Supervision mode radio
+  const modeRadio = document.querySelector(
+    `input[name="supervisionMode"][value="${settings.supervisionMode || "supervised"}"]`
+  );
+  if (modeRadio) modeRadio.checked = true;
+}
+
+function saveSettings() {
+  const supervisionRadio = document.querySelector('input[name="supervisionMode"]:checked');
+
+  const settings = {
+    backendUrl: settingEls.backendUrl.value.trim(),
+    model: settingEls.model.value,
+    temperature: parseFloat(settingEls.temperature.value),
+    maxSteps: parseInt(settingEls.maxSteps.value),
+    supervisionMode: supervisionRadio?.value || "supervised",
+    confidenceThreshold: parseFloat(settingEls.confidenceThreshold.value),
+    alwaysApprovePasswords: settingEls.alwaysApprovePasswords.checked,
+    alwaysApprovePayments: settingEls.alwaysApprovePayments.checked,
+    allowDownloads: settingEls.allowDownloads.checked,
+  };
+
+  safeSend({ type: MSG.SAVE_SETTINGS, settings });
+
+  // Visual feedback
+  els.settingsSaveBtn.textContent = "Saved!";
+  els.settingsSaveBtn.classList.add("saved");
+  setTimeout(() => {
+    els.settingsSaveBtn.textContent = "Save Settings";
+    els.settingsSaveBtn.classList.remove("saved");
+    closeSettings();
+  }, 1000);
 }
 
 // ─── TASK EXECUTION ───────────────────────────────────────────
 
+// Simple tasks go directly to execution (original flow).
+// Complex tasks (shopping, booking, comparison) go through the planner first.
+const COMPLEX_KEYWORDS = [
+  "buy", "purchase", "order", "book", "reserve", "compare",
+  "best", "recommend", "cheapest", "under", "budget",
+  "grocery", "groceries", "shop", "shopping",
+  "flight", "hotel", "ticket",
+  "schedule", "meeting", "calendar", "event", "appointment",
+  "email", "send", "compose", "research", "itinerary",
+];
+
+function isComplexTask(text) {
+  const lower = text.toLowerCase();
+  return COMPLEX_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
 function runTask() {
+  // If live mode is active, send text to the live session
+  if (liveMode) {
+    const text = els.taskInput.value.trim();
+    if (!text) return;
+    addChatMessage("user", text);
+    safeSend({ type: MSG.LIVE_TEXT, text });
+    els.taskInput.value = "";
+    els.sendBtn.disabled = true;
+    return;
+  }
+
+
+  // If waiting for user input (graceful handover during execution)
+  if (appState === "needs_input") {
+    sendUserInput();
+    return;
+  }
+
+  // If in takeover mode, user can type "continue" to give back or send context
+  if (appState === "takeover") {
+    const text = els.taskInput.value.trim().toLowerCase();
+    if (text === "continue" || text === "done" || text === "go ahead") {
+      els.taskInput.value = "";
+      giveBackControl();
+    } else {
+      sendUserInput();
+    }
+    return;
+  }
+
+  // If running, user is steering the agent mid-task
+  if (appState === "running") {
+    sendSteering();
+    return;
+  }
+
+  // If in planning conversation, send as chat reply
+  if (appState === "planning") {
+    sendPlanChat();
+    return;
+  }
+
   const instruction = els.taskInput.value.trim();
   if (!instruction) return;
 
-  isRunning = true;
+  // Always run conversational planner first — consistent UX for all tasks
+  startPlanning(instruction);
+}
+
+// Original direct execution flow — untouched
+function executeDirectly(instruction) {
+  appState = "running";
   stepCount = 0;
   startTime = Date.now();
+  currentAgent = null;
 
-  chrome.runtime.sendMessage({ type: MSG.RUN_TASK, instruction });
+  safeSend({ type: MSG.RUN_TASK, instruction });
 
-  // Update UI
-  els.inputSection.classList.add("hidden");
+  // Update UI — exactly as before
+  els.welcomeSection.classList.add("hidden");
+  els.chatSection.classList.add("hidden");
   els.statusSection.classList.remove("hidden");
-  els.stopBtn.classList.remove("hidden");
+  showHandoverControls("running");
   els.completeSection.classList.add("hidden");
+  els.timelineSection.classList.remove("hidden");
+  els.taskInstructionCard.classList.remove("hidden");
   els.taskInstruction.textContent = instruction;
   els.timeline.innerHTML = "";
-  setStatus("Starting...", "");
+  els.loadingDots.classList.remove("hidden");
+
+  setStatus("Starting", "", "Initializing task...");
+  updateAgentAvatar(null);
+  updateStepCounter();
+
+  // Operator window: show inferred action plan
+  const plan = inferOperatorPlan(instruction);
+  if (plan.length > 0) {
+    showOperatorWindow("Action Plan");
+    plan.forEach((p) => addOperatorAction(p.label, p.value, "pending"));
+    // Set first action as active
+    if (operatorActions.length > 0) setOperatorActionActive(0);
+  }
 
   addTimelineEntry("start", "Task started", instruction);
+
+  // Clear input — keep enabled for mid-task steering
+  els.taskInput.value = "";
+  els.taskInput.placeholder = "Type to steer the agent (e.g. 'make it 11am')...";
+  els.sendBtn.disabled = true; // Re-enabled on input
+}
+
+// Planning flow — for complex tasks that need clarification
+function startPlanning(instruction) {
+  appState = "planning";
+  startTime = Date.now();
+
+  // Show chat section alongside status
+  els.welcomeSection.classList.add("hidden");
+  els.completeSection.classList.add("hidden");
+  els.chatSection.classList.remove("hidden");
+  els.statusSection.classList.remove("hidden");
+  showHandoverControls("running");
+  els.chatMessages.innerHTML = "";
+
+  setStatus("Thinking", "executing", "Understanding your request...");
+  updateAgentAvatar("orchestrator");
+
+  // Add user bubble
+  addChatBubble("user", instruction);
+
+  // Show typing indicator
+  showTypingIndicator();
+
+  // Send to planner
+  safeSend({ type: MSG.PLAN_CHAT, text: instruction });
+
+  // Fallback: if no response in 8s, skip planner and execute directly
+  plannerTimeout = setTimeout(() => {
+    if (appState === "planning") {
+      removeTypingIndicator();
+      addChatBubble("agent", "Let me help you with that right away.");
+      executePlannedTask(instruction);
+    }
+  }, 8000);
+
+  // Update input
+  els.taskInput.value = "";
+  els.taskInput.placeholder = "Reply to G-Axis...";
+  els.sendBtn.disabled = true;
+}
+
+function sendPlanChat() {
+  const text = els.taskInput.value.trim();
+  if (!text) return;
+
+  addChatBubble("user", text);
+  showTypingIndicator();
+  safeSend({ type: MSG.PLAN_CHAT, text });
+
+  // Fallback timeout for follow-up messages too
+  if (plannerTimeout) clearTimeout(plannerTimeout);
+  plannerTimeout = setTimeout(() => {
+    if (appState === "planning") {
+      removeTypingIndicator();
+      addChatBubble("agent", "Let me proceed with what I know.");
+      executePlannedTask(text);
+    }
+  }, 8000);
+
+  els.taskInput.value = "";
+  els.sendBtn.disabled = true;
+}
+
+function handlePlanResponse(data) {
+  // Clear fallback timeout
+  if (plannerTimeout) { clearTimeout(plannerTimeout); plannerTimeout = null; }
+
+  // Remove typing indicator
+  removeTypingIndicator();
+
+  // Add agent message
+  const agentBubble = addChatBubble("agent", data.message);
+
+  // Add recommendations if any
+  if (data.recommendations && data.recommendations.length > 0) {
+    const recsDiv = document.createElement("div");
+    recsDiv.className = "chat-recommendations";
+    data.recommendations.forEach((rec) => {
+      const item = document.createElement("div");
+      item.className = "chat-recommendation-item";
+      item.textContent = rec;
+      recsDiv.appendChild(item);
+    });
+    agentBubble.appendChild(recsDiv);
+  }
+
+  // Speak the response (TTS)
+  speakText(data.message);
+
+  if (data.ready_to_execute && data.plan) {
+    // Show execute button
+    const executeBtn = document.createElement("button");
+    executeBtn.className = "chat-execute-btn";
+    executeBtn.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      Let's go
+    `;
+    planExecuteInstruction = data.refined_instruction || data.plan.refined_instruction || data.plan.action;
+    executeBtn.addEventListener("click", () => {
+      executeBtn.disabled = true;
+      executeBtn.textContent = "Starting...";
+      executePlannedTask(planExecuteInstruction);
+    });
+    els.chatMessages.appendChild(executeBtn);
+  } else if (data.questions && data.questions.length > 0) {
+    // Show quick reply chips for questions
+    const chipsDiv = document.createElement("div");
+    chipsDiv.className = "chat-quick-replies";
+    data.questions.forEach((q) => {
+      // Don't add chip for the question itself — it's already in the message
+    });
+  }
+
+  scrollChatToBottom();
+}
+
+function executePlannedTask(instruction) {
+  appState = "running";
+
+  // Transition: hide chat, show execution UI
+  els.chatSection.classList.add("hidden");
+  els.statusSection.classList.remove("hidden");
+  showHandoverControls("running");
+  els.timelineSection.classList.remove("hidden");
+  els.taskInstructionCard.classList.remove("hidden");
+  els.taskInstruction.textContent = instruction;
+  els.timeline.innerHTML = "";
+  els.loadingDots.classList.remove("hidden");
+
+  appState = "running";
+  stepCount = 0;
+  currentAgent = null;
+
+  setStatus("Starting", "", "Initializing task...");
+  updateAgentAvatar(null);
+  updateStepCounter();
+
+  // Operator window: show inferred action plan
+  const plan = inferOperatorPlan(instruction);
+  if (plan.length > 0) {
+    showOperatorWindow("Action Plan");
+    plan.forEach((p) => addOperatorAction(p.label, p.value, "pending"));
+    if (operatorActions.length > 0) setOperatorActionActive(0);
+  }
+
+  addTimelineEntry("start", "Task started", instruction);
+
+  // Keep input enabled for mid-task steering
+  els.taskInput.placeholder = "Type to steer the agent (e.g. 'make it 11am')...";
+
+  safeSend({ type: MSG.RUN_TASK, instruction });
+
+  els.taskInput.value = "";
+  els.sendBtn.disabled = true; // Re-enabled on input
+}
+
+function addChatBubble(role, text) {
+  const bubble = document.createElement("div");
+  bubble.className = `chat-bubble ${role}`;
+
+  if (role === "agent") {
+    bubble.innerHTML = `
+      <div class="agent-label">
+        <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" fill="#e8f0fe"/><path d="M12 6L17 12L12 18L7 12Z" fill="#1a73e8"/></svg>
+        G-Axis
+      </div>
+      <div class="agent-text">${escapeHtml(text)}</div>
+    `;
+  } else {
+    bubble.textContent = text;
+  }
+
+  els.chatMessages.appendChild(bubble);
+  scrollChatToBottom();
+  return bubble;
+}
+
+function showTypingIndicator() {
+  removeTypingIndicator();
+  const typing = document.createElement("div");
+  typing.className = "chat-typing";
+  typing.id = "chat-typing";
+  typing.innerHTML = "<span></span><span></span><span></span>";
+  els.chatMessages.appendChild(typing);
+  scrollChatToBottom();
+}
+
+function removeTypingIndicator() {
+  const existing = document.getElementById("chat-typing");
+  if (existing) existing.remove();
+}
+
+function scrollChatToBottom() {
+  requestAnimationFrame(() => {
+    els.contentArea.scrollTop = els.contentArea.scrollHeight;
+  });
+}
+
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// ─── TEXT-TO-SPEECH (AGENT VOICE) ──────────────────────────
+// Voice personality: warm, calm, friendly — like a trusted companion.
+// Natural pacing with slight warmth. Never robotic.
+
+let _selectedVoice = null;
+let _voicesLoaded = false;
+
+function _pickBestVoice() {
+  if (_selectedVoice) return _selectedVoice;
+  const voices = window.speechSynthesis.getVoices();
+  if (!voices.length) return null;
+
+  // Priority order: natural-sounding English voices
+  // Prefer female voices for warmth (Samantha on macOS, Google UK on Chrome)
+  const priorities = [
+    (v) => v.name === "Samantha",                          // macOS — warm, natural
+    (v) => v.name === "Karen",                             // macOS AU — friendly
+    (v) => v.name.includes("Google UK English Female"),    // Chrome — clear, warm
+    (v) => v.name.includes("Google US English"),           // Chrome — natural
+    (v) => v.name === "Zarvox" ? false : v.name.includes("Natural"), // Any "Natural" voice
+    (v) => v.lang.startsWith("en") && v.name.includes("Female"),
+    (v) => v.lang.startsWith("en") && !v.name.includes("Whisper"),
+  ];
+
+  for (const test of priorities) {
+    const match = voices.find(test);
+    if (match) {
+      _selectedVoice = match;
+      console.log(`[G-Axis] Voice selected: ${match.name} (${match.lang})`);
+      return match;
+    }
+  }
+
+  // Fallback: first English voice
+  _selectedVoice = voices.find((v) => v.lang.startsWith("en")) || voices[0];
+  return _selectedVoice;
+}
+
+// Pre-load voices (they load asynchronously in Chrome)
+if ("speechSynthesis" in window) {
+  window.speechSynthesis.onvoiceschanged = () => {
+    _voicesLoaded = true;
+    _pickBestVoice();
+  };
+  // Try immediately too (Firefox loads sync)
+  if (window.speechSynthesis.getVoices().length) {
+    _voicesLoaded = true;
+    _pickBestVoice();
+  }
+}
+
+function speakText(text) {
+  if (!("speechSynthesis" in window)) return;
+  if (!text || text.trim().length === 0) return;
+
+  // Cancel any ongoing speech
+  window.speechSynthesis.cancel();
+
+  // Clean up text for natural speech
+  let speakable = text
+    .replace(/https?:\/\/\S+/g, "")      // Remove URLs (sounds awful spoken)
+    .replace(/[#*_`~]/g, "")              // Remove markdown formatting
+    .replace(/\s{2,}/g, " ")             // Collapse whitespace
+    .replace(/\n+/g, ". ")               // Newlines → pauses
+    .trim();
+
+  if (!speakable) return;
+
+  // Truncate very long text (TTS shouldn't read an essay)
+  if (speakable.length > 300) {
+    speakable = speakable.slice(0, 300) + "... and more.";
+  }
+
+  const utterance = new SpeechSynthesisUtterance(speakable);
+  utterance.rate = 1.0;    // Natural pace — not rushed
+  utterance.pitch = 1.05;  // Slightly warm pitch
+  utterance.volume = 0.85;
+
+  const voice = _pickBestVoice();
+  if (voice) utterance.voice = voice;
+
+  window.speechSynthesis.speak(utterance);
 }
 
 function stopTask() {
-  chrome.runtime.sendMessage({ type: MSG.STOP_TASK });
+  safeSend({ type: MSG.STOP_TASK });
   resetUI();
 }
 
+function pauseTask() {
+  safeSend({ type: MSG.PAUSE_TASK });
+  appState = "paused";
+  showHandoverControls("paused");
+  setStatus("Paused", "paused", "Agent paused — resume whenever you're ready");
+  addTimelineEntry("agent", "Paused", "Agent paused by user", null, null, "orchestrator");
+}
+
+function resumeTask() {
+  safeSend({ type: MSG.RESUME_TASK });
+  appState = "running";
+  showHandoverControls("running");
+  setStatus("Resuming", "executing", "Picking up where we left off...");
+  addTimelineEntry("action", "Resumed", "Agent resumed", null, null, "orchestrator");
+}
+
+function takeoverControl() {
+  safeSend({ type: MSG.TAKEOVER });
+  appState = "takeover";
+  showHandoverControls("takeover");
+  setStatus("You're in control", "takeover", "Do your thing — I'll wait right here");
+  addTimelineEntry("agent", "Takeover", "Human took manual control", null, null, "orchestrator");
+  // Enable input for user to chat while in control
+  els.taskInput.placeholder = "Tell the agent what you did, or say 'continue'...";
+  els.sendBtn.disabled = false;
+}
+
+function giveBackControl() {
+  safeSend({ type: MSG.GIVE_BACK });
+  appState = "running";
+  showHandoverControls("running");
+  setStatus("Back on it", "executing", "Continuing where you left off...");
+  addTimelineEntry("action", "Handback", "User gave control back to agent", null, null, "orchestrator");
+  els.taskInput.placeholder = "Type to steer the agent (e.g. 'make it 11am')...";
+  els.sendBtn.disabled = true;
+}
+
+function showHandoverControls(state) {
+  // state: "running" | "paused" | "takeover"
+  const running = state === "running";
+  const paused = state === "paused";
+  const takeover = state === "takeover";
+
+  els.pauseBtn.classList.toggle("hidden", !running);
+  els.takeoverBtn.classList.toggle("hidden", !running);
+  els.resumeBtn.classList.toggle("hidden", !paused);
+  els.givebackBtn.classList.toggle("hidden", !takeover);
+  els.stopBtn.classList.remove("hidden");
+}
+
 function sendApproval(approved) {
-  chrome.runtime.sendMessage({ type: approved ? MSG.APPROVE : MSG.DENY });
+  safeSend({ type: approved ? MSG.APPROVE : MSG.DENY });
   els.approvalSection.classList.add("hidden");
   if (approved) {
     addTimelineEntry("approved", "Approved", "");
   } else {
     addTimelineEntry("denied", "Denied by operator", "");
   }
+}
+
+function showUserInputPrompt(message) {
+  appState = "needs_input";
+  // Re-enable input bar for user to respond
+  els.taskInput.placeholder = "Type your guidance or 'continue' to keep going...";
+  els.taskInput.focus();
+  els.sendBtn.disabled = false;
+  speakText(message || "I could use a little help here. What would you like me to do?");
+}
+
+function sendUserInput() {
+  const text = els.taskInput.value.trim();
+  if (!text) return;
+
+  safeSend({ type: MSG.USER_INPUT, text });
+  addTimelineEntry("approved", "Your guidance", text);
+  setStatus("Resuming", "executing", "Agent is continuing with your guidance...");
+
+  els.taskInput.value = "";
+  els.taskInput.placeholder = "Assign a task or ask anything...";
+  els.sendBtn.disabled = true;
+  appState = "running";
+}
+
+/** Mid-task steering — user types guidance while agent is executing */
+function sendSteering() {
+  const text = els.taskInput.value.trim();
+  if (!text) return;
+
+  safeSend({ type: MSG.USER_INPUT, text, steering: true });
+  addTimelineEntry("steer", "You guided", text);
+  setStatus("Adjusting", "executing", "Applying your change...");
+
+  els.taskInput.value = "";
+  els.sendBtn.disabled = true;
 }
 
 // ─── MESSAGE HANDLER ──────────────────────────────────────────
@@ -137,13 +894,25 @@ function handleMessage(msg) {
       break;
 
     case MSG.TASK_STARTED:
-      setStatus("Running", "executing");
+      setStatus("Working on it", "executing", "Getting things ready...");
+      els.loadingDots.classList.add("hidden");
+      speakText("Alright, I'm on it!");
+      // Activity tracker: show and add first step
+      activitySteps = [];
+      showActivityTracker();
+      addActivityStep("Starting task", "active");
       break;
 
-    case MSG.PERCEIVING:
-      setStatus("Analyzing page...", "perceiving");
-      addTimelineEntry("eye", "Analyzing", msg.data?.url || "");
+    case MSG.PERCEIVING: {
+      setStatus("Looking at the page", "perceiving", msg.data?.url || "Understanding what's on screen...");
+      updateAgentAvatar("perceiver");
+      addTimelineEntry("eye", "Analyzing", msg.data?.url || "", null, null, "perceiver");
+      // Activity tracker: mark previous active done, add perceiving step
+      const prevPerceive = findLastActiveStep();
+      if (prevPerceive >= 0) updateActivityStep(prevPerceive, "done");
+      addActivityStep("Analyzing page", "active");
       break;
+    }
 
     case MSG.PERCEPTION:
       if (msg.data?.screenshot) {
@@ -151,121 +920,335 @@ function handleMessage(msg) {
         els.screenshotImg.src = `data:image/jpeg;base64,${msg.data.screenshot}`;
       }
       if (msg.data?.page_summary) {
-        addTimelineEntry("brain", "Understood", msg.data.page_summary);
+        addTimelineEntry("brain", "Understood", msg.data.page_summary, null, null, "orchestrator");
       }
       break;
 
-    case MSG.ACTION_PLANNED:
-      setStatus(`${msg.data?.action_type?.toUpperCase() || "Action"}...`, "executing");
+    case MSG.ACTION_PLANNED: {
+      const actionDesc = msg.data?.reasoning || msg.data?.action_type?.toUpperCase() || "Executing action";
+      setStatus(
+        `${msg.data?.action_type?.toUpperCase() || "Action"}`,
+        "executing",
+        actionDesc
+      );
+      updateAgentAvatar("navigator");
       addTimelineEntry(
         "action",
         msg.data?.action_type?.toUpperCase() || "ACTION",
         msg.data?.reasoning || "",
         msg.data?.risk_level,
-        msg.data?.confidence
+        msg.data?.confidence,
+        "navigator"
       );
-      break;
+      // Activity tracker: mark previous active done, add new action step
+      const prevAction = findLastActiveStep();
+      if (prevAction >= 0) updateActivityStep(prevAction, "done");
+      addActivityStep(actionDesc, "active");
 
-    case MSG.ACTION_SUCCEEDED:
-      stepCount++;
-      const lastEntry = els.timeline.lastElementChild;
-      if (lastEntry) {
-        const icon = lastEntry.querySelector(".timeline-icon");
-        if (icon) icon.textContent = "\u2713";
-      }
+      // Operator window: advance to next pending action
+      advanceOperatorPlan(msg.data?.action_type, msg.data?.reasoning);
       break;
+    }
+
+    case MSG.ACTION_SUCCEEDED: {
+      stepCount++;
+      updateStepCounter();
+      // Mark last timeline entry as success
+      const entries = els.timeline.querySelectorAll(".timeline-entry");
+      const lastEntry = entries[entries.length - 1];
+      if (lastEntry) {
+        lastEntry.classList.remove("active");
+        const iconEl = lastEntry.querySelector(".timeline-icon");
+        if (iconEl) {
+          iconEl.className = "timeline-icon icon-success";
+          iconEl.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>`;
+        }
+      }
+      // Activity tracker: mark current active step as done
+      const activeSucc = findLastActiveStep();
+      if (activeSucc >= 0) updateActivityStep(activeSucc, "done");
+      break;
+    }
 
     case MSG.ACTION_FAILED:
-      addTimelineEntry("error", "Failed", msg.data?.error || "Unknown error");
+      addTimelineEntry("error", "Failed", msg.data?.error || "Unknown error", null, null, "error");
       break;
 
     case MSG.APPROVAL_NEEDED:
-      setStatus("Awaiting approval", "awaiting");
+      setStatus("Need your okay", "awaiting", "Quick confirmation needed");
       showApproval(msg.data);
+      speakText("Hey, I need a quick okay from you before I continue.");
       break;
 
-    case MSG.TASK_COMPLETED:
-      isRunning = false;
-      showComplete(true, msg.data);
+    case MSG.CONFIRM_ACTION:
+      showConfirmation(msg.data);
       break;
 
-    case MSG.TASK_FAILED:
-      isRunning = false;
-      showComplete(false, msg.data);
+    case MSG.STEERING_RECEIVED:
+      addTimelineEntry("steer", "Steering received", msg.data?.text || "Adjusting...");
+      setStatus("Adjusting", "executing", "Processing your guidance...");
       break;
 
-    case MSG.AGENT_ACTIVE:
-      const agentNames = {
-        perceiver: "Perceiver",
-        orchestrator: "Orchestrator",
-        navigator: "Navigator",
-        form_filler: "Form Filler",
-        data_extractor: "Data Extractor",
-        verifier: "Verifier",
-      };
-      const agentName = agentNames[msg.data?.agent] || msg.data?.agent || "Agent";
-      setStatus(`${agentName} active`, "executing");
-      if (msg.data?.subtask) {
-        addTimelineEntry("agent", agentName, msg.data.subtask);
+    case MSG.STEERING_APPLIED: {
+      const updates = msg.data?.updates || {};
+      const summary = Object.entries(updates).map(([k, v]) => `${k}: ${v}`).join(", ");
+      addTimelineEntry("approved", "Applied changes", summary);
+      setStatus("Continuing", "executing", `Updated: ${summary}`);
+      break;
+    }
+
+    case MSG.DOM_BLOCKER: {
+      const bStatus = msg.data?.status || "blocked";
+      const bText = (msg.data?.text || "").slice(0, 60);
+      if (bStatus === "dismissed") {
+        addTimelineEntry("approved", "Popup dismissed", bText || "Auto-dismissed");
+      } else {
+        addTimelineEntry("error", "Popup detected", bText || "Analyzing blocker...");
+        setStatus("Handling popup", "executing", "Detected an overlay — resolving...");
       }
       break;
+    }
+
+    case MSG.TASK_COMPLETED: {
+      appState = "idle";
+      els.loadingDots.classList.add("hidden");
+      // Activity tracker: mark all active as done, add final step
+      const activeDone = findLastActiveStep();
+      if (activeDone >= 0) updateActivityStep(activeDone, "done");
+      addActivityStep("Done! Delivering results", "done");
+      syncActivityBar();
+      // Operator window: complete with summary
+      completeOperatorWindow(msg.data?.summary || "Task completed successfully", true);
+      showComplete(true, msg.data);
+      els.taskInput.placeholder = "Assign a task or ask anything...";
+      break;
+    }
+
+    case MSG.TASK_FAILED: {
+      appState = "idle";
+      els.loadingDots.classList.add("hidden");
+      els.taskInput.placeholder = "Assign a task or ask anything...";
+      // Activity tracker: mark current as failed
+      const activeFail = findLastActiveStep();
+      if (activeFail >= 0) updateActivityStep(activeFail, "failed");
+      markCurrentActivityFailed();
+      els.activityLabel.textContent = "Ran into an issue";
+      // Operator window: mark failed
+      completeOperatorWindow(msg.data?.error || "Task failed", false);
+      showComplete(false, msg.data);
+      break;
+    }
+
+    case MSG.TASK_STOPPED:
+      appState = "idle";
+      els.loadingDots.classList.add("hidden");
+      addTimelineEntry("agent", "Stopped", msg.data?.message || "Task stopped", null, null, "orchestrator");
+      speakText(msg.data?.message || "Got it, I've stopped.");
+      showComplete(false, { error: msg.data?.message || "Task stopped by user" });
+      break;
+
+    case MSG.TASK_PAUSED:
+      appState = "paused";
+      showHandoverControls("paused");
+      setStatus("Paused", "paused", msg.data?.message || "Agent paused");
+      addTimelineEntry("agent", "Paused", msg.data?.message || "Agent paused", null, null, "orchestrator");
+      speakText(msg.data?.message || "Sure, I'll pause here. Take your time.");
+      break;
+
+    case MSG.TASK_RESUMED:
+      appState = "running";
+      showHandoverControls("running");
+      setStatus("Resuming", "executing", msg.data?.message || "Continuing...");
+      addTimelineEntry("action", "Resumed", msg.data?.message || "Agent resumed", null, null, "orchestrator");
+      speakText(msg.data?.message || "Thanks, I'll pick up right where we left off.");
+      break;
+
+    case MSG.HUMAN_TAKEOVER:
+      appState = "takeover";
+      showHandoverControls("takeover");
+      setStatus("You're in control", "takeover", msg.data?.message || "Agent stepped aside");
+      addTimelineEntry("agent", "Takeover", msg.data?.message || "Human took control", null, null, "orchestrator");
+      speakText(msg.data?.message || "You've got it! I'll wait right here.");
+      els.taskInput.placeholder = "Tell the agent what you did, or say 'continue'...";
+      els.sendBtn.disabled = false;
+      break;
+
+    case MSG.AGENT_RESUMED:
+      appState = "running";
+      showHandoverControls("running");
+      setStatus("Back on it", "executing", msg.data?.message || "Agent continuing...");
+      addTimelineEntry("action", "Handback", msg.data?.message || "Agent resumed control", null, null, "orchestrator");
+      speakText(msg.data?.message || "Thanks! I'll take it from here.");
+      els.taskInput.placeholder = "Assign a task or ask anything...";
+      els.sendBtn.disabled = true;
+      break;
+
+    case MSG.AGENT_ACTIVE: {
+      const agentKey = msg.data?.agent || "";
+      const config = AGENT_CONFIG[agentKey];
+      const agentName = config?.name || msg.data?.agent || "Agent";
+
+      setStatus(`${agentName} active`, "executing", msg.data?.subtask || "Working...");
+      updateAgentAvatar(agentKey);
+
+      if (msg.data?.subtask) {
+        addTimelineEntry("agent", agentName, msg.data.subtask, null, null, agentKey);
+      }
+      break;
+    }
 
     case MSG.MEMORY_LOADED:
       if (msg.data?.episodes > 0 || msg.data?.similar > 0) {
         addTimelineEntry(
-          "brain", "Memory loaded",
-          `${msg.data.episodes || 0} past visits, ${msg.data.patterns || 0} patterns, ${msg.data.similar || 0} similar tasks`
+          "brain",
+          "Memory loaded",
+          `${msg.data.episodes || 0} past visits, ${msg.data.patterns || 0} patterns, ${msg.data.similar || 0} similar tasks`,
+          null,
+          null,
+          "orchestrator"
         );
       }
       break;
 
-    case MSG.ERROR:
-      addTimelineEntry("error", "Error", msg.data?.message || "Unknown error");
+    case MSG.PLAN_RESPONSE:
+      handlePlanResponse(msg.data || {});
       break;
+
+    case MSG.NEEDS_INPUT:
+      setStatus("Quick question", "awaiting", msg.data?.message || "Could use your input");
+      addTimelineEntry("brain", "Asking you", msg.data?.message || "Need a little guidance", null, null, "orchestrator");
+      showUserInputPrompt(msg.data?.message || "How would you like me to handle this?");
+      break;
+
+    case MSG.ERROR:
+      addTimelineEntry("error", "Error", msg.data?.message || "Unknown error", null, null, "error");
+      break;
+
+    // ── Live Audio ──
+    case MSG.LIVE_AUDIO_OUT:
+      if (liveMode && msg.data) playLiveAudioChunk(msg.data);
+      break;
+
+    case MSG.LIVE_TRANSCRIPT_IN:
+      if (msg.data?.text) {
+        addChatMessage("user", msg.data.text);
+      }
+      break;
+
+    case MSG.LIVE_TRANSCRIPT_OUT:
+      if (msg.data?.text) {
+        addChatMessage("agent", msg.data.text);
+      }
+      break;
+
+    case MSG.LIVE_STATUS: {
+      const st = msg.data?.status;
+      if (st === "connected") {
+        addTimelineEntry("success", "Live Audio", "Connected — listening...");
+      } else if (st === "error") {
+        addTimelineEntry("error", "Live Audio Error", msg.data?.message || "Connection failed");
+        stopLiveMode();
+      } else if (st === "disconnected") {
+        addTimelineEntry("info", "Live Audio", "Session ended");
+      }
+      break;
+    }
   }
 }
 
 // ─── UI HELPERS ───────────────────────────────────────────────
 
-function setStatus(text, className) {
+function setStatus(text, className, subtitle) {
   els.statusText.textContent = text;
   els.statusText.className = className || "";
+  if (subtitle !== undefined) {
+    els.agentSubtitle.textContent = subtitle;
+  }
 }
 
-function addTimelineEntry(icon, actionType, reasoning, riskLevel, confidence) {
-  const iconMap = {
-    start: "\u25B6",
-    eye: "\uD83D\uDC41",
-    brain: "\uD83E\uDDE0",
-    action: "\u2022",
-    approved: "\u2705",
-    denied: "\u274C",
-    error: "\u26A0",
-    complete: "\u2714",
+function updateAgentAvatar(agentKey) {
+  const config = AGENT_CONFIG[agentKey];
+  // Remove all agent classes
+  els.agentAvatar.className = "agent-avatar";
+  if (config) {
+    els.agentAvatar.classList.add(config.class);
+    els.agentAvatar.innerHTML = `<div class="agent-pulse-ring"></div>${config.icon}`;
+  } else {
+    els.agentAvatar.innerHTML = `<div class="agent-pulse-ring"></div><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>`;
+  }
+  currentAgent = agentKey;
+}
+
+function updateStepCounter() {
+  if (stepCount > 0) {
+    els.stepCounter.textContent = `${stepCount} step${stepCount !== 1 ? "s" : ""}`;
+  } else {
+    els.stepCounter.textContent = "";
+  }
+}
+
+function addTimelineEntry(icon, actionType, reasoning, riskLevel, confidence, agentType) {
+  const iconSvgs = {
+    start: `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>`,
+    eye: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M2 12s4-8 10-8 10 8 10 8-4 8-10 8-10-8-10-8z"/></svg>`,
+    brain: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a7 7 0 0 1 7 7c0 2.38-1.19 4.47-3 5.74V17a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2v-2.26C6.19 13.47 5 11.38 5 9a7 7 0 0 1 7-7z"/><path d="M9 21h6M10 17h4"/></svg>`,
+    action: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
+    agent: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>`,
+    approved: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>`,
+    denied: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>`,
+    error: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`,
+    complete: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>`,
+    steer: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>`,
   };
 
+  // Determine the agent class for the timeline entry border
+  let agentClass = "agent-default";
+  if (agentType === "error") {
+    agentClass = "agent-error";
+  } else if (icon === "start") {
+    agentClass = "agent-start";
+  } else if (icon === "approved" || icon === "complete") {
+    agentClass = "agent-success";
+  } else if (icon === "steer") {
+    agentClass = "agent-steering";
+  } else if (AGENT_CONFIG[agentType]) {
+    agentClass = `agent-${AGENT_CONFIG[agentType].class}`;
+  }
+
   const entry = document.createElement("div");
-  entry.className = "timeline-entry";
+  entry.className = `timeline-entry ${agentClass} active`;
 
   let metaHtml = "";
   if (riskLevel) {
-    metaHtml += `<span class="risk-badge ${riskLevel}">${riskLevel}</span> `;
+    metaHtml += `<span class="risk-badge ${riskLevel}">${riskLevel}</span>`;
   }
   if (confidence != null) {
-    metaHtml += `<span class="dim">${Math.round(confidence * 100)}%</span>`;
+    metaHtml += `<span style="font-size:11px;color:var(--md-on-surface-variant)">${Math.round(confidence * 100)}%</span>`;
   }
 
   entry.innerHTML = `
-    <div class="timeline-icon">${iconMap[icon] || "\u2022"}</div>
+    <div class="timeline-icon icon-${icon}">${iconSvgs[icon] || iconSvgs.agent}</div>
     <div class="timeline-content">
-      <span class="action-type">${actionType}</span> ${metaHtml}
-      <div class="reasoning">${reasoning}</div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <span class="action-type">${actionType}</span>
+        ${metaHtml ? `<div class="timeline-meta">${metaHtml}</div>` : ""}
+      </div>
+      ${reasoning ? `<div class="reasoning">${reasoning}</div>` : ""}
     </div>
     <span class="timeline-time">${formatTime()}</span>
   `;
 
+  // Remove active shimmer from previous entries
+  els.timeline.querySelectorAll(".timeline-entry.active").forEach((e) => {
+    e.classList.remove("active");
+  });
+
   els.timeline.appendChild(entry);
-  entry.scrollIntoView({ behavior: "smooth", block: "end" });
+
+  // Scroll to bottom
+  requestAnimationFrame(() => {
+    els.contentArea.scrollTop = els.contentArea.scrollHeight;
+  });
 }
 
 function showApproval(data) {
@@ -274,110 +1257,883 @@ function showApproval(data) {
   els.approvalReason.textContent = data.reason || "";
   els.approvalRisk.textContent = data.risk_level || "medium";
   els.approvalRisk.className = `risk-badge ${data.risk_level || "medium"}`;
-  els.approvalConfidence.textContent = data.confidence != null
-    ? `${Math.round(data.confidence * 100)}% confidence`
-    : "";
+  els.approvalConfidence.textContent =
+    data.confidence != null ? `${Math.round(data.confidence * 100)}% confidence` : "";
+}
+
+// ─── CONFIRMATION CARD (Manus-style) ─────────────────────────
+
+const CONFIRM_ICONS = {
+  calendar: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M18 3h-2V2h-1v1H9V2H8v1H6C4.9 3 4 3.9 4 5v14c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z" fill="#fff"/><path d="M18 3h-2V2h-1v1H9V2H8v1H6C4.9 3 4 3.9 4 5v14c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z" fill="none" stroke="#4285f4" stroke-width="0.5"/><rect x="4" y="8" width="16" height="11" rx="0" fill="#4285f4"/><rect x="4" y="3" width="16" height="5" fill="#4285f4" rx="2"/><text x="12" y="16.5" text-anchor="middle" fill="#fff" font-size="8" font-weight="bold" font-family="Google Sans, sans-serif">${new Date().getDate()}</text><rect x="7.5" y="4.5" width="2" height="2" rx="0.5" fill="#fff" opacity="0.6"/><rect x="14.5" y="4.5" width="2" height="2" rx="0.5" fill="#fff" opacity="0.6"/></svg>`,
+  email: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M2 6c0-1.1.9-2 2-2h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6z" fill="#ea4335"/><path d="M2 6l10 7 10-7" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/><path d="M2 18l7-5M22 18l-7-5" stroke="#fff" stroke-width="1" opacity="0.5"/></svg>`,
+  sheet: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="2" fill="#34a853"/><path d="M3 9h18M3 15h18M9 3v18" stroke="#fff" stroke-width="1.2" opacity="0.6"/><rect x="10" y="10" width="7" height="4" rx="0.5" fill="#fff" opacity="0.9"/></svg>`,
+  doc: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M6 2h8l6 6v12c0 1.1-.9 2-2 2H6c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2z" fill="#4285f4"/><path d="M14 2v6h6" fill="#3367d6"/><path d="M8 13h8M8 16h6" stroke="#fff" stroke-width="1.2" stroke-linecap="round"/></svg>`,
+  default: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" fill="#1a73e8"/><path d="M12 8v4l3 3" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+};
+
+const FIELD_ICONS = {
+  title: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/></svg>`,
+  date: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>`,
+  time: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>`,
+  duration: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6"/><path d="M16.24 7.76l-2.12 2.12"/></svg>`,
+  location: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg>`,
+  person: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`,
+  link: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>`,
+  to: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><path d="M22 6l-10 7L2 6"/></svg>`,
+  subject: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h10"/></svg>`,
+  description: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>`,
+  default: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="1"/></svg>`,
+};
+
+function showConfirmation(data) {
+  const actionType = data.action_type || "action";
+  const icon = CONFIRM_ICONS[data.icon || actionType] || CONFIRM_ICONS.default;
+  const title = data.title || "New Action";
+  const buttonLabel = data.button_label || "Create";
+  const fields = data.fields || [];
+
+  // Reset drag position for fresh card
+  resetConfirmPosition();
+
+  els.confirmIcon.innerHTML = icon;
+  els.confirmTitle.textContent = title;
+  els.confirmCreateBtn.textContent = buttonLabel;
+
+  // Render EDITABLE fields — user can click to modify before confirming
+  let fieldsHtml = "";
+  for (const field of fields) {
+    const fieldIcon = FIELD_ICONS[field.icon || field.key] || FIELD_ICONS.default;
+    const isPrimary = field.primary === true;
+    const key = escapeHtml(field.key || "");
+    const val = escapeHtml(field.value || "");
+
+    // field_id is the actual backend key (e.g. "start_date", "start_time")
+    const fieldId = escapeHtml(field.field_id || field.key || "");
+
+    // Determine input type based on field key (icon type)
+    let inputType = "text";
+    let inputVal = val;
+    if (key === "date") {
+      inputType = "date";
+      // Convert display date (e.g. "Mar 12, 2026") to ISO format for date picker
+      try {
+        const d = new Date(field.value);
+        if (!isNaN(d.getTime())) {
+          inputVal = d.toISOString().split("T")[0];
+        }
+      } catch (_) {}
+    } else if (key === "time") {
+      inputType = "time";
+      // Convert "10:00am – 11:00am" or "10:00am" → "10:00" for time picker
+      try {
+        const firstTime = (field.value || "").split("–")[0].trim().replace(/\s/g, "").toLowerCase();
+        const m = firstTime.match(/^(\d{1,2}):(\d{2})(am|pm)$/);
+        if (m) {
+          let h = parseInt(m[1]);
+          if (m[3] === "pm" && h < 12) h += 12;
+          if (m[3] === "am" && h === 12) h = 0;
+          inputVal = `${h.toString().padStart(2,"0")}:${m[2]}`;
+        }
+      } catch (_) {}
+    }
+
+    if (isPrimary) {
+      fieldsHtml += `
+        <div class="confirm-field" data-key="${key}">
+          <input type="text" class="confirm-field-edit primary" value="${val}" data-field-key="${fieldId}" />
+        </div>`;
+    } else {
+      fieldsHtml += `
+        <div class="confirm-field" data-key="${key}">
+          <div class="confirm-field-icon">${fieldIcon}</div>
+          <div class="confirm-field-value-wrap">
+            <input type="${inputType}" class="confirm-field-edit" value="${inputVal}" data-field-key="${fieldId}" />
+            ${field.label ? `<span class="label">${escapeHtml(field.label)}</span>` : ""}
+          </div>
+        </div>`;
+    }
+  }
+  els.confirmFields.innerHTML = fieldsHtml;
+
+  // Show
+  els.confirmSection.classList.remove("hidden");
+  els.approvalSection.classList.add("hidden");
+
+  setStatus("Awaiting confirmation", "awaiting", "Review and confirm the action");
+
+  // Announce confirmation via TTS — warm, concise
+  const primaryField = fields.find(f => f.primary);
+  const primaryName = primaryField ? primaryField.value : title;
+  speakText(`Here's what I've got for you — ${primaryName}. Take a look and let me know!`);
+}
+
+// Confirm/Cancel button handlers + drag + pin
+try {
+  if (els.confirmCreateBtn) {
+    els.confirmCreateBtn.addEventListener("click", () => {
+      // Collect edited field values, converting date/time back to expected formats
+      const edits = {};
+      els.confirmFields.querySelectorAll(".confirm-field-edit").forEach((input) => {
+        const key = input.dataset.fieldKey;
+        if (!key) return;
+
+        let val = input.value.trim();
+        if (input.type === "date" && val) {
+          // Convert "2026-03-12" → "Mar 12, 2026"
+          try {
+            const d = new Date(val + "T00:00:00");
+            const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+            val = `${months[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+          } catch (_) {}
+        } else if (input.type === "time" && val) {
+          // Convert "10:00" → "10:00am", "14:30" → "2:30pm"
+          try {
+            const [hStr, mStr] = val.split(":");
+            let h = parseInt(hStr);
+            const ampm = h >= 12 ? "pm" : "am";
+            if (h > 12) h -= 12;
+            if (h === 0) h = 12;
+            val = `${h}:${mStr}${ampm}`;
+          } catch (_) {}
+        }
+        edits[key] = val;
+      });
+
+      els.confirmSection.classList.add("hidden");
+      resetConfirmPosition();
+      // Send approval WITH any user edits
+      safeSend({ type: MSG.APPROVE, edits });
+      setStatus("Executing", "executing", "Creating...");
+      addTimelineEntry("action", "Confirmed", "User approved the action", null, null, "navigator");
+    });
+  }
+
+  if (els.confirmCancelBtn) {
+    els.confirmCancelBtn.addEventListener("click", () => {
+      els.confirmSection.classList.add("hidden");
+      resetConfirmPosition();
+      safeSend({ type: MSG.DENY });
+      setStatus("Cancelled", "error", "Action cancelled by user");
+      addTimelineEntry("error", "Cancelled", "User cancelled the action", null, null, "error");
+    });
+  }
+
+  // ── Pin button ──
+  let confirmPinned = false;
+  if (els.confirmPinBtn) {
+    els.confirmPinBtn.addEventListener("click", () => {
+      confirmPinned = !confirmPinned;
+      els.confirmPinBtn.classList.toggle("pinned", confirmPinned);
+      els.confirmCard.classList.toggle("pinned", confirmPinned);
+    });
+  }
+
+  // ── Drag logic ──
+  if (els.confirmDragHandle && els.confirmCard) {
+    let isDragging = false;
+    let dragStartX = 0, dragStartY = 0;
+    let cardStartX = 0, cardStartY = 0;
+    let hasMoved = false;
+
+    els.confirmDragHandle.addEventListener("mousedown", (e) => {
+      // Don't drag if clicking pin button
+      if (e.target.closest(".confirm-pin-btn")) return;
+
+      isDragging = true;
+      hasMoved = false;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+
+      const rect = els.confirmCard.getBoundingClientRect();
+      const parentRect = els.confirmCard.parentElement.getBoundingClientRect();
+      cardStartX = rect.left - parentRect.left;
+      cardStartY = rect.top - parentRect.top;
+
+      els.confirmCard.classList.add("dragging");
+      e.preventDefault();
+    });
+
+    document.addEventListener("mousemove", (e) => {
+      if (!isDragging) return;
+      hasMoved = true;
+
+      const dx = e.clientX - dragStartX;
+      const dy = e.clientY - dragStartY;
+
+      els.confirmCard.style.position = "relative";
+      els.confirmCard.style.left = dx + "px";
+      els.confirmCard.style.top = dy + "px";
+    });
+
+    document.addEventListener("mouseup", () => {
+      if (!isDragging) return;
+      isDragging = false;
+      els.confirmCard.classList.remove("dragging");
+    });
+  }
+} catch (e) {
+  console.error("[G-Axis] Error setting up confirm card:", e);
+}
+
+function resetConfirmPosition() {
+  if (els.confirmCard) {
+    els.confirmCard.style.position = "";
+    els.confirmCard.style.left = "";
+    els.confirmCard.style.top = "";
+  }
 }
 
 function showComplete(success, data) {
   els.statusSection.classList.add("hidden");
   els.stopBtn.classList.add("hidden");
+  els.pauseBtn.classList.add("hidden");
+  els.resumeBtn.classList.add("hidden");
+  els.takeoverBtn.classList.add("hidden");
+  els.givebackBtn.classList.add("hidden");
   els.completeSection.classList.remove("hidden");
   els.approvalSection.classList.add("hidden");
+  els.confirmSection.classList.add("hidden");
 
   const duration = ((Date.now() - startTime) / 1000).toFixed(1);
 
+  const checkmarkSvg = els.completeIcon.querySelector(".checkmark-svg");
+  const errorSvg = els.completeIcon.querySelector(".error-svg");
+
+  // Show cleanup button (hides workspace tabs if any were created)
+  els.cleanupBtn.classList.remove("hidden");
+
   if (success) {
-    els.completeIcon.textContent = "\u2705";
-    els.completeSummary.textContent = data?.summary || "Task completed successfully";
-    setStatus("Complete", "success");
-    addTimelineEntry("complete", "Done", data?.summary || "");
+    checkmarkSvg.classList.remove("hidden");
+    errorSvg.classList.add("hidden");
+    // Re-trigger animation by cloning
+    const circle = checkmarkSvg.querySelector(".checkmark-circle");
+    const check = checkmarkSvg.querySelector(".checkmark-check");
+    resetAnimation(circle);
+    resetAnimation(check);
+
+    const summary = data?.summary || "Task completed successfully";
+    els.completeSummary.innerHTML = escapeHtml(summary) + "<br><br><small>Want me to do anything else?</small>";
+    setStatus("Complete", "success", "");
+    addTimelineEntry("complete", "Done", summary, null, null, "success");
+    speakText("All done! " + summary + " Want me to do anything else?");
   } else {
-    els.completeIcon.textContent = "\u274C";
-    els.completeSummary.textContent = data?.error || "Task failed";
-    setStatus("Failed", "failed");
+    checkmarkSvg.classList.add("hidden");
+    errorSvg.classList.remove("hidden");
+    // Re-trigger error animation
+    errorSvg.querySelectorAll("circle, path").forEach(resetAnimation);
+
+    const errorMsg = data?.error || "Task failed";
+    els.completeSummary.textContent = errorMsg;
+    setStatus("Failed", "failed", "");
+    speakText("Hmm, that didn't quite work out. " + errorMsg + " Want me to try again?");
   }
 
-  els.completeStats.textContent = `${stepCount} actions \u00B7 ${duration}s`;
+  els.completeStats.textContent = `${stepCount} action${stepCount !== 1 ? "s" : ""} \u00B7 ${duration}s`;
+
+  requestAnimationFrame(() => {
+    els.contentArea.scrollTop = els.contentArea.scrollHeight;
+  });
+}
+
+function resetAnimation(el) {
+  if (!el) return;
+  el.style.animation = "none";
+  void el.offsetHeight;
+  el.style.animation = "";
 }
 
 function resetUI() {
-  isRunning = false;
-  els.inputSection.classList.remove("hidden");
+  appState = "idle";
+  planExecuteInstruction = "";
+  if (plannerTimeout) { clearTimeout(plannerTimeout); plannerTimeout = null; }
+  currentAgent = null;
+  els.welcomeSection.classList.remove("hidden");
   els.statusSection.classList.add("hidden");
   els.completeSection.classList.add("hidden");
   els.approvalSection.classList.add("hidden");
+  els.chatSection.classList.add("hidden");
   els.screenshotContainer.classList.add("hidden");
   els.stopBtn.classList.add("hidden");
+  els.pauseBtn.classList.add("hidden");
+  els.resumeBtn.classList.add("hidden");
+  els.takeoverBtn.classList.add("hidden");
+  els.givebackBtn.classList.add("hidden");
+  els.timelineSection.classList.add("hidden");
+  els.taskInstructionCard.classList.add("hidden");
+  els.loadingDots.classList.add("hidden");
+  els.cleanupBtn.classList.add("hidden");
+  hideActivityTracker();
+  hideOperatorWindow();
   els.taskInput.value = "";
+  els.taskInput.placeholder = "Assign a task or ask anything...";
+  els.taskInput.style.height = "auto";
   els.sendBtn.disabled = true;
+  els.connectorsPanel.classList.add("hidden");
+  els.connectorsBtn.classList.remove("active");
   els.timeline.innerHTML = "";
+  els.chatMessages.innerHTML = "";
+  els.stepCounter.textContent = "";
+  updateAgentAvatar(null);
+  // Stop any speech
+  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
 }
 
 function formatTime() {
   return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-// ─── VOICE INPUT ──────────────────────────────────────────────
+// ─── ACTIVITY TRACKER (Manus-style) ──────────────────────────
+
+const ACTIVITY_ICONS = {
+  done: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>`,
+  active: `<svg class="spinner-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 2a10 10 0 0 1 10 10"/></svg>`,
+  pending: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" opacity="0.4"><circle cx="12" cy="12" r="4"/></svg>`,
+  failed: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>`,
+};
+
+function initActivityTracker() {
+  if (els.activityBar) {
+    els.activityBar.addEventListener("click", toggleActivityExpanded);
+  }
+  if (els.activityToggle) {
+    els.activityToggle.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleActivityExpanded();
+    });
+  }
+}
+
+function toggleActivityExpanded() {
+  activityExpanded = !activityExpanded;
+  els.activityTracker.classList.toggle("expanded", activityExpanded);
+}
+
+function showActivityTracker() {
+  els.activityTracker.classList.remove("hidden");
+}
+
+function hideActivityTracker() {
+  els.activityTracker.classList.add("hidden");
+  els.activityTracker.classList.remove("expanded");
+  activityExpanded = false;
+  activitySteps = [];
+}
+
+function addActivityStep(label, status = "pending") {
+  activitySteps.push({ label, status });
+  renderActivitySteps();
+  // If this step is active, update the compact bar
+  if (status === "active") {
+    setCurrentActivity(label);
+  }
+  return activitySteps.length - 1;
+}
+
+function updateActivityStep(index, status, newLabel) {
+  if (index < 0 || index >= activitySteps.length) return;
+  activitySteps[index].status = status;
+  if (newLabel) activitySteps[index].label = newLabel;
+  renderActivitySteps();
+  // Update compact bar to show the current active step
+  syncActivityBar();
+}
+
+function setCurrentActivity(label) {
+  els.activityLabel.textContent = label;
+  // Update icon to spinner (active)
+  els.activityIcon.className = "activity-icon active";
+  els.activityIcon.innerHTML = ACTIVITY_ICONS.active;
+}
+
+function markCurrentActivityDone() {
+  els.activityIcon.className = "activity-icon done";
+  els.activityIcon.innerHTML = ACTIVITY_ICONS.done;
+}
+
+function markCurrentActivityFailed() {
+  els.activityIcon.className = "activity-icon failed";
+  els.activityIcon.innerHTML = ACTIVITY_ICONS.failed;
+}
+
+function syncActivityBar() {
+  const activeStep = activitySteps.find((s) => s.status === "active");
+  const doneCount = activitySteps.filter((s) => s.status === "done").length;
+  const total = activitySteps.length;
+
+  els.activityCounter.textContent = `${doneCount} / ${total}`;
+
+  if (activeStep) {
+    els.activityLabel.textContent = activeStep.label;
+    els.activityIcon.className = "activity-icon active";
+    els.activityIcon.innerHTML = ACTIVITY_ICONS.active;
+  } else {
+    // All done or no active — check if all done
+    const allDone = activitySteps.length > 0 && activitySteps.every((s) => s.status === "done");
+    if (allDone) {
+      els.activityLabel.textContent = "All steps completed";
+      markCurrentActivityDone();
+    }
+  }
+}
+
+function renderActivitySteps() {
+  const doneCount = activitySteps.filter((s) => s.status === "done").length;
+  const total = activitySteps.length;
+  els.activityCounter.textContent = `${doneCount} / ${total}`;
+
+  els.activitySteps.innerHTML = activitySteps
+    .map(
+      (step, i) => `
+    <div class="activity-step ${step.status}">
+      <span class="activity-step-icon ${step.status}">${ACTIVITY_ICONS[step.status] || ACTIVITY_ICONS.pending}</span>
+      <span class="activity-step-label">${escapeHtml(step.label)}</span>
+    </div>`
+    )
+    .join("");
+}
+
+/** Find the index of the last step with the given status */
+function findLastActiveStep() {
+  for (let i = activitySteps.length - 1; i >= 0; i--) {
+    if (activitySteps[i].status === "active") return i;
+  }
+  return -1;
+}
+
+// ─── TEXTAREA AUTO-RESIZE ─────────────────────────────────────
+
+function autoResizeTextarea() {
+  const el = els.taskInput;
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 160) + "px";
+}
+
+function toggleConnectorsPanel() {
+  const isHidden = els.connectorsPanel.classList.contains("hidden");
+  els.connectorsPanel.classList.toggle("hidden", !isHidden);
+  els.connectorsBtn.classList.toggle("active", isHidden);
+}
+
+// ─── OPERATOR WINDOW ──────────────────────────────────────────
+
+const OPERATOR_ICONS = {
+  pending: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9aa0a6" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>`,
+  active: `<svg class="spinner-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#1a73e8" stroke-width="2.5" stroke-linecap="round"><path d="M12 2a10 10 0 0 1 10 10"/></svg>`,
+  done: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#34a853" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>`,
+  failed: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ea4335" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>`,
+};
+
+function showOperatorWindow(title) {
+  operatorActions = [];
+  els.operatorWindow.classList.remove("hidden");
+  els.operatorTitle.textContent = title || "Action Plan";
+  els.operatorStatusBadge.textContent = "Running";
+  els.operatorStatusBadge.className = "operator-status-badge running";
+  els.operatorActions.innerHTML = "";
+  els.operatorMessage.classList.add("hidden");
+}
+
+function hideOperatorWindow() {
+  els.operatorWindow.classList.add("hidden");
+  operatorActions = [];
+}
+
+function addOperatorAction(label, value, status = "pending") {
+  operatorActions.push({ label, value, status });
+  renderOperatorActions();
+  return operatorActions.length - 1;
+}
+
+function updateOperatorAction(index, status, newValue) {
+  if (index < 0 || index >= operatorActions.length) return;
+  operatorActions[index].status = status;
+  if (newValue !== undefined) operatorActions[index].value = newValue;
+  renderOperatorActions();
+}
+
+function setOperatorActionActive(index) {
+  // Mark all prior as done, this one as active
+  for (let i = 0; i < operatorActions.length; i++) {
+    if (i < index && operatorActions[i].status !== "failed") {
+      operatorActions[i].status = "done";
+    } else if (i === index) {
+      operatorActions[i].status = "active";
+    }
+  }
+  renderOperatorActions();
+}
+
+function completeOperatorWindow(message, success = true) {
+  if (operatorActions.length === 0) return;
+
+  // Update Status row value
+  const statusIdx = operatorActions.findIndex((a) => a.label === "Status");
+  if (statusIdx >= 0) {
+    operatorActions[statusIdx].value = success ? "Completed" : "Failed";
+  }
+
+  // Mark all remaining as done (or failed)
+  operatorActions.forEach((a) => {
+    if (a.status === "active" || a.status === "pending") {
+      a.status = success ? "done" : "failed";
+    }
+  });
+  renderOperatorActions();
+
+  els.operatorStatusBadge.textContent = success ? "Completed" : "Failed";
+  els.operatorStatusBadge.className = `operator-status-badge ${success ? "completed" : "failed"}`;
+
+  if (message) {
+    els.operatorMessageText.textContent = message;
+    els.operatorMessage.classList.remove("hidden");
+  }
+}
+
+function renderOperatorActions() {
+  els.operatorActions.innerHTML = operatorActions
+    .map((a) => `
+      <div class="operator-action-row ${a.status}">
+        <span class="operator-action-icon">${OPERATOR_ICONS[a.status] || OPERATOR_ICONS.pending}</span>
+        <span class="operator-action-label">${escapeHtml(a.label)}</span>
+        <span class="operator-action-value">${escapeHtml(a.value || "")}</span>
+      </div>
+    `)
+    .join("");
+}
+
+/**
+ * Infer high-level operator actions from the task instruction.
+ * Returns array of { label, value } for the operator window.
+ */
+function inferOperatorPlan(instruction) {
+  const lower = instruction.toLowerCase();
+  const plan = [];
+
+  // Calendar / Meeting tasks
+  if (lower.match(/\b(meeting|event|calendar|schedule|standup|scrum|appointment)\b/)) {
+    plan.push({ label: "Action", value: "Open Calendar" });
+    plan.push({ label: "Action", value: "Create Event" });
+
+    // Extract title
+    const titleMatch = instruction.match(/(?:for|called|named|titled?)\s+["']?([^"'\n,.]+)/i)
+      || instruction.match(/(?:schedule|create|block|set up)\s+(?:a\s+)?(.+?)(?:\s+(?:at|on|for|tomorrow|today|next))/i);
+    if (titleMatch) {
+      plan.push({ label: "Title", value: titleMatch[1].trim() });
+    }
+
+    // Extract time
+    const timeMatch = instruction.match(/(?:at|@)\s*(\d{1,2}(?::\d{2})?\s*(?:AM|PM|am|pm)?)/i);
+    if (timeMatch) {
+      plan.push({ label: "Time", value: timeMatch[1].trim() });
+    }
+
+    // Extract date context
+    if (lower.includes("tomorrow")) {
+      plan.push({ label: "Date", value: "Tomorrow" });
+    } else if (lower.includes("today")) {
+      plan.push({ label: "Date", value: "Today" });
+    }
+
+    plan.push({ label: "Status", value: "Pending" });
+    return plan;
+  }
+
+  // Email tasks
+  if (lower.match(/\b(email|mail|send|compose|write to)\b/)) {
+    plan.push({ label: "Action", value: "Open Gmail" });
+    plan.push({ label: "Action", value: "Compose Email" });
+
+    const toMatch = instruction.match(/(?:to|email)\s+([A-Za-z\s]+?)(?:\s+(?:about|saying|with|regarding))/i);
+    if (toMatch) plan.push({ label: "To", value: toMatch[1].trim() });
+
+    const aboutMatch = instruction.match(/(?:about|regarding|saying)\s+["']?(.+?)["']?$/i);
+    if (aboutMatch) plan.push({ label: "Subject", value: aboutMatch[1].trim() });
+
+    plan.push({ label: "Status", value: "Pending" });
+    return plan;
+  }
+
+  // Document tasks
+  if (lower.match(/\b(document|doc|write|draft|create a doc|google doc)\b/)) {
+    plan.push({ label: "Action", value: "Open Google Docs" });
+    plan.push({ label: "Action", value: "Create Document" });
+    plan.push({ label: "Action", value: "Write Content" });
+    plan.push({ label: "Status", value: "Pending" });
+    return plan;
+  }
+
+  // Research tasks
+  if (lower.match(/\b(research|compare|find|search|look up|itinerary|guide)\b/)) {
+    plan.push({ label: "Action", value: "Research & Gather Data" });
+    plan.push({ label: "Action", value: "Analyze Sources" });
+    plan.push({ label: "Action", value: "Create Report" });
+    plan.push({ label: "Status", value: "Pending" });
+    return plan;
+  }
+
+  // Spreadsheet tasks
+  if (lower.match(/\b(spreadsheet|sheet|table|data|csv)\b/)) {
+    plan.push({ label: "Action", value: "Open Google Sheets" });
+    plan.push({ label: "Action", value: "Create Spreadsheet" });
+    plan.push({ label: "Action", value: "Populate Data" });
+    plan.push({ label: "Status", value: "Pending" });
+    return plan;
+  }
+
+  // Navigation / search tasks
+  if (lower.match(/\b(go to|navigate|open|visit|search)\b/)) {
+    plan.push({ label: "Action", value: "Navigate to Page" });
+    plan.push({ label: "Action", value: "Execute Task" });
+    plan.push({ label: "Status", value: "Pending" });
+    return plan;
+  }
+
+  // Generic fallback
+  plan.push({ label: "Action", value: "Execute Task" });
+  plan.push({ label: "Status", value: "Pending" });
+  return plan;
+}
+
+/**
+ * Advance operator plan based on the current action.
+ * Matches action types to operator plan rows and progresses them.
+ */
+function advanceOperatorPlan(actionType, reasoning) {
+  if (operatorActions.length === 0) return;
+
+  const type = (actionType || "").toLowerCase();
+  const desc = (reasoning || "").toLowerCase();
+
+  // Find the first pending "Action" row and mark it active
+  // Also try to match by content for smarter progression
+  let matched = false;
+  for (let i = 0; i < operatorActions.length; i++) {
+    const a = operatorActions[i];
+    if (a.status !== "pending") continue;
+
+    // Smart matching: if the action/reasoning matches the plan value
+    const val = a.value.toLowerCase();
+    if (
+      (type === "navigate" && val.includes("open")) ||
+      (type === "navigate" && val.includes("navigate")) ||
+      (type === "click" && (val.includes("create") || val.includes("compose"))) ||
+      (type === "type_text" && (val.includes("write") || val.includes("content") || val.includes("populate"))) ||
+      (desc.includes("calendar") && val.includes("calendar")) ||
+      (desc.includes("gmail") && val.includes("gmail")) ||
+      (desc.includes("doc") && val.includes("doc")) ||
+      (desc.includes("sheet") && val.includes("sheet")) ||
+      (a.label === "Action" && a.status === "pending")
+    ) {
+      setOperatorActionActive(i);
+      matched = true;
+      break;
+    }
+  }
+
+  // Fallback: just advance to next pending
+  if (!matched) {
+    const nextPending = operatorActions.findIndex((a) => a.status === "pending");
+    if (nextPending >= 0) setOperatorActionActive(nextPending);
+  }
+
+  // Update the Status row if it exists
+  const statusIdx = operatorActions.findIndex((a) => a.label === "Status");
+  if (statusIdx >= 0) {
+    operatorActions[statusIdx].value = "In Progress";
+    operatorActions[statusIdx].status = "active";
+    renderOperatorActions();
+  }
+}
+
+// ─── VOICE INPUT / GEMINI LIVE AUDIO ─────────────────────────
 
 function toggleVoice() {
   if (isRecording) {
-    stopVoice();
+    // Mic is on — stop mic but keep live session active for text
+    stopMic();
+  } else if (liveMode) {
+    // Live session active but mic off — start mic
+    startMic();
   } else {
-    startVoice();
+    // Nothing active — start live session + mic
+    startLiveMode();
   }
 }
 
-function startVoice() {
-  if (!("webkitSpeechRecognition" in window) && !("SpeechRecognition" in window)) {
-    addTimelineEntry("error", "Voice", "Speech recognition not supported in this browser");
+// ── Gemini Live Mode ──
+// Bidirectional session with Gemini: supports voice (mic streaming) AND text.
+// Gemini responds with audio and can call browser tools mid-conversation.
+
+/** Start the Gemini Live session (backend) + audio playback. No mic required. */
+async function startLiveSession() {
+  if (liveMode) return; // Already active
+
+  // Playback context at 24kHz (Gemini output rate)
+  livePlayCtx = new AudioContext({ sampleRate: 24000 });
+  // Browsers suspend AudioContext until user gesture — resume it now
+  if (livePlayCtx.state === "suspended") {
+    await livePlayCtx.resume();
+    console.log("[G-Axis] AudioContext resumed for playback");
+  }
+  livePlayQueue = [];
+  livePlayingSource = null;
+
+  // Tell backend to start Gemini Live session
+  safeSend({ type: MSG.LIVE_START });
+
+  liveMode = true;
+
+  // Show chat section for transcripts
+  els.chatSection.classList.remove("hidden");
+  els.welcomeSection.classList.add("hidden");
+}
+
+/** Start mic streaming into the live session. */
+async function startMic() {
+  if (!liveMode) await startLiveSession();
+
+  try {
+    liveMicStream = await navigator.mediaDevices.getUserMedia({
+      audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    });
+  } catch (e) {
+    console.error("[G-Axis] Mic access denied:", e);
+    addTimelineEntry("error", "Microphone", "Permission denied — check browser settings");
     return;
   }
 
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  recognition = new SpeechRecognition();
-  recognition.continuous = false;
-  recognition.interimResults = true;
-  recognition.lang = "en-US";
+  liveAudioCtx = new AudioContext({ sampleRate: 16000 });
+  const source = liveAudioCtx.createMediaStreamSource(liveMicStream);
+  const processor = liveAudioCtx.createScriptProcessor(4096, 1, 1);
 
-  recognition.onresult = (event) => {
-    const transcript = Array.from(event.results)
-      .map((r) => r[0].transcript)
-      .join("");
-    els.taskInput.value = transcript;
-    els.sendBtn.disabled = !transcript.trim();
-  };
-
-  recognition.onend = () => {
-    isRecording = false;
-    els.voiceBtn.classList.remove("recording");
-    // Auto-send if we got a result
-    if (els.taskInput.value.trim()) {
-      runTask();
+  processor.onaudioprocess = (e) => {
+    if (!liveMode || !isRecording) return;
+    const float32 = e.inputBuffer.getChannelData(0);
+    const int16 = new Int16Array(float32.length);
+    for (let i = 0; i < float32.length; i++) {
+      const s = Math.max(-1, Math.min(1, float32[i]));
+      int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
     }
+    const bytes = new Uint8Array(int16.buffer);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    const b64 = btoa(binary);
+    safeSend({ type: MSG.LIVE_AUDIO_IN, data: b64 });
   };
 
-  recognition.onerror = (e) => {
-    isRecording = false;
-    els.voiceBtn.classList.remove("recording");
-    if (e.error !== "no-speech") {
-      addTimelineEntry("error", "Voice", `Error: ${e.error}`);
-    }
-  };
+  source.connect(processor);
+  processor.connect(liveAudioCtx.destination);
 
-  recognition.start();
   isRecording = true;
-  els.voiceBtn.classList.add("recording");
+  els.voiceBtn.classList.add("recording", "live-mode");
+  els.voiceBtn.title = "Stop microphone";
+  addChatMessage("system", "Live audio connected — start speaking!");
 }
 
-function stopVoice() {
-  if (recognition) {
-    recognition.stop();
-  }
+/** Stop mic but keep live session active (can still type). */
+function stopMic() {
   isRecording = false;
-  els.voiceBtn.classList.remove("recording");
+  if (liveMicStream) {
+    liveMicStream.getTracks().forEach((t) => t.stop());
+    liveMicStream = null;
+  }
+  if (liveAudioCtx) {
+    liveAudioCtx.close().catch(() => {});
+    liveAudioCtx = null;
+  }
+  els.voiceBtn.classList.remove("recording", "live-mode");
+  els.voiceBtn.title = "Start microphone";
+}
+
+/** Backward-compatible wrapper — starts live session + mic. */
+async function startLiveMode() {
+  await startMic();
+}
+
+function stopLiveMode() {
+  // Stop mic
+  stopMic();
+
+  // Stop playback
+  if (livePlayingSource) {
+    try { livePlayingSource.stop(); } catch (_) {}
+    livePlayingSource = null;
+  }
+  if (livePlayCtx) {
+    livePlayCtx.close().catch(() => {});
+    livePlayCtx = null;
+  }
+  livePlayQueue = [];
+
+  liveMode = false;
+
+  // Tell backend to close Gemini Live session
+  safeSend({ type: MSG.LIVE_STOP });
+
+  els.voiceBtn.classList.remove("recording", "live-mode");
+  els.voiceBtn.title = "Voice input";
+}
+
+function playLiveAudioChunk(base64Pcm) {
+  if (!livePlayCtx || livePlayCtx.state === "closed") return;
+  // Resume if browser suspended the context (e.g. tab switch, policy)
+  if (livePlayCtx.state === "suspended") {
+    livePlayCtx.resume().catch(() => {});
+  }
+
+  // Decode base64 → Int16 PCM → Float32
+  const binaryStr = atob(base64Pcm);
+  const bytes = new Uint8Array(binaryStr.length);
+  for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+  const int16 = new Int16Array(bytes.buffer);
+  const float32 = new Float32Array(int16.length);
+  for (let i = 0; i < int16.length; i++) {
+    float32[i] = int16[i] / (int16[i] < 0 ? 0x8000 : 0x7FFF);
+  }
+
+  // Create AudioBuffer and queue for playback
+  const buffer = livePlayCtx.createBuffer(1, float32.length, 24000);
+  buffer.getChannelData(0).set(float32);
+  livePlayQueue.push(buffer);
+
+  // Start playing if not already
+  if (!livePlayingSource) _playNextChunk();
+}
+
+function _playNextChunk() {
+  if (!livePlayCtx || livePlayCtx.state === "closed" || livePlayQueue.length === 0) {
+    livePlayingSource = null;
+    return;
+  }
+  const buffer = livePlayQueue.shift();
+  const source = livePlayCtx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(livePlayCtx.destination);
+  source.onended = () => _playNextChunk();
+  livePlayingSource = source;
+  source.start();
+}
+
+// Chat message helper for transcripts
+function addChatMessage(role, text) {
+  els.chatSection.classList.remove("hidden");
+  const div = document.createElement("div");
+  div.className = `chat-message chat-${role}`;
+  div.textContent = text;
+  els.chatMessages.appendChild(div);
+  els.chatMessages.scrollTop = els.chatMessages.scrollHeight;
 }
 
 // ─── START ────────────────────────────────────────────────────
 
-init();
+// Global error handler to catch any unhandled errors
+window.addEventListener("error", (e) => {
+  console.error("[G-Axis] Unhandled error:", e.message, e.filename, e.lineno);
+});
+
+try {
+  init();
+  console.log("[G-Axis] init() completed successfully");
+} catch (e) {
+  console.error("[G-Axis] init() failed:", e);
+}

@@ -11,3 +11,10 @@ screenshots/
 audit-logs/
 .pytest_cache/
 memory-store/
+.DS_Store
+.chrome-profile/
+*.tfstate
+*.tfstate.backup
+.terraform/
+terraform.tfvars
+.replays/

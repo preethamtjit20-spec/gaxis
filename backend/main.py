@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.agent.core import GAxisAgent, TaskEvent
+from backend.agent.live_session import LiveSession
 
 load_dotenv()
 
@@ -25,7 +26,21 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message
 logger = logging.getLogger("gaxis.server")
 
 agent: GAxisAgent | None = None
-connected_clients: set[WebSocket] = set()
+task_running: bool = False
+task_paused: bool = False
+task_cancel_event: asyncio.Event | None = None
+task_pause_event: asyncio.Event | None = None  # Cleared = paused, Set = running
+current_task: asyncio.Task | None = None
+paused_instruction: str = ""  # Remember what we were doing
+
+# Lock to prevent concurrent task execution from racing on globals
+_task_lock = asyncio.Lock()
+
+# Gemini Live Audio session (one per server — single-user for now)
+live_session: LiveSession | None = None
+
+# Each connected client gets a queue for outgoing messages
+client_queues: dict[WebSocket, asyncio.Queue] = {}
 
 
 @asynccontextmanager
@@ -57,26 +72,43 @@ app.add_middleware(
 # ─── EVENT BROADCASTING ──────────────────────────────────────
 
 async def broadcast_event(event: TaskEvent) -> None:
-    """Send event to all connected WebSocket clients."""
+    """Queue event for all connected WebSocket clients."""
     data = json.dumps({"type": event.type, "task_id": event.task_id, "data": event.data})
-    disconnected = set()
-    for ws in connected_clients:
+    logger.info(f"Broadcasting: {event.type} (task={event.task_id})")
+    dead = []
+    for ws, queue in client_queues.items():
         try:
-            await ws.send_text(data)
-        except Exception:
-            disconnected.add(ws)
-    connected_clients -= disconnected
+            queue.put_nowait(data)
+        except Exception as e:
+            logger.warning(f"Broadcast queue error for client: {e}")
+            dead.append(ws)
+    for ws in dead:
+        client_queues.pop(ws, None)
 
 
 # ─── WEBSOCKET ENDPOINT ──────────────────────────────────────
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
+    global live_session
     await ws.accept()
-    connected_clients.add(ws)
-    logger.info(f"Client connected ({len(connected_clients)} total)")
+    queue: asyncio.Queue = asyncio.Queue()
+    client_queues[ws] = queue
+    logger.info(f"Client connected ({len(client_queues)} total)")
 
     agent.on_event(broadcast_event)
+
+    async def send_loop():
+        """Drains the queue and sends messages to the client."""
+        try:
+            while True:
+                data = await queue.get()
+                await ws.send_text(data)
+        except Exception as e:
+            logger.debug(f"Send loop ended: {e}")  # WebSocket closed
+
+    sender = asyncio.create_task(send_loop())
+    current_task = None
 
     try:
         while True:
@@ -84,18 +116,44 @@ async def websocket_endpoint(ws: WebSocket):
             data = json.loads(message)
             msg_type = data.get("type", "")
 
-            if msg_type == "run_task":
+            if msg_type == "plan_chat":
+                # Conversation planner — chat before execution
+                user_message = data.get("message", "")
+                if agent and user_message:
+                    try:
+                        result = await agent.plan_chat(user_message)
+                        queue.put_nowait(json.dumps({
+                            "type": "plan_response",
+                            "data": result,
+                        }))
+                    except Exception as e:
+                        logger.error(f"Plan chat error: {e}")
+                        queue.put_nowait(json.dumps({
+                            "type": "plan_response",
+                            "data": {
+                                "message": "Let me just help you with that directly.",
+                                "ready_to_execute": True,
+                                "plan": {"refined_instruction": user_message},
+                                "refined_instruction": user_message,
+                            },
+                        }))
+
+            elif msg_type == "run_task":
                 instruction = data.get("instruction", "")
-                mode = data.get("mode", "api")  # "api" or "extension"
+                mode = data.get("mode", "api")
                 if instruction:
-                    asyncio.create_task(_run_task(instruction, mode))
+                    current_task = asyncio.create_task(_run_task(instruction, mode))
                 else:
-                    await ws.send_text(json.dumps({
+                    queue.put_nowait(json.dumps({
                         "type": "error", "data": {"message": "No instruction provided"}
                     }))
 
             elif msg_type == "approve":
                 if agent:
+                    edits = data.get("edits")
+                    if edits:
+                        logger.info(f"User edits on confirmation card: {edits}")
+                        agent.receive_user_edits(edits)
                     agent.respond_approval(True)
 
             elif msg_type == "deny":
@@ -103,7 +161,7 @@ async def websocket_endpoint(ws: WebSocket):
                     agent.respond_approval(False)
 
             elif msg_type == "screenshot":
-                # Extension sending a screenshot
+                logger.info(f"Received screenshot from extension (url={data.get('url', '')[:60]})")
                 if agent:
                     agent.receive_screenshot(
                         screenshot_b64=data.get("screenshot", ""),
@@ -112,41 +170,221 @@ async def websocket_endpoint(ws: WebSocket):
                     )
 
             elif msg_type == "dom_snapshot":
-                # Extension sending a DOM snapshot
                 if agent:
                     agent.receive_dom_snapshot(data.get("elements", []))
 
             elif msg_type == "dom_changed":
-                # Extension reporting DOM mutations — log for context
                 logger.debug(f"DOM changed: {len(data.get('changes', []))} mutations")
 
+            elif msg_type == "dom_blocker":
+                if agent:
+                    status = data.get("status", "blocked")
+                    element = data.get("element", "?")
+                    text = data.get("text", "")[:100]
+                    logger.info(f"DOM blocker: status={status} el={element} text={text[:60]}")
+                    if status == "blocked":
+                        # Unknown blocker — queue for Gemini vision recovery
+                        agent.receive_blocker(data)
+                    else:
+                        logger.info(f"Blocker auto-dismissed: {element}")
+
             elif msg_type == "action_result":
-                # Extension reporting action execution result
-                pass  # Future: handle action confirmation from extension
+                # Extension sends back the actual result of executing an action
+                if agent:
+                    agent.tool_executor.receive_action_result(data.get("result", {}))
+                    logger.info(f"Action result received: success={data.get('result', {}).get('success')}")
+
+            elif msg_type == "ping":
+                queue.put_nowait(json.dumps({"type": "pong"}))
+
+            elif msg_type == "user_input":
+                if agent:
+                    text = data.get("text", "")
+                    # Mid-task steering: user typed guidance while agent is executing
+                    if data.get("steering") and text:
+                        agent.receive_steering(text)
+                        logger.info(f"Mid-task steering: {text[:80]}")
+                    else:
+                        agent.respond_user_input(text)
+
+            elif msg_type == "set_preferences":
+                if agent:
+                    agent.set_user_preferences(data.get("preferences", {}))
+
+            elif msg_type == "get_connectors":
+                if agent:
+                    skills_info = []
+                    for skill in agent.connectors.all_skills():
+                        skills_info.append({
+                            "name": skill.full_name,
+                            "description": skill.description,
+                            "connector": skill.connector,
+                            "tags": skill.tags,
+                            "mode": skill.mode.value,
+                        })
+                    queue.put_nowait(json.dumps({
+                        "type": "connectors_info",
+                        "data": {"skills": skills_info},
+                    }))
 
             elif msg_type == "stop":
-                pass  # TODO: task cancellation
+                logger.info("Stop requested by user")
+                if task_cancel_event:
+                    task_cancel_event.set()
+                if current_task and not current_task.done():
+                    current_task.cancel()
+                async with _task_lock:
+                    task_running = False
+                    task_paused = False
+                await broadcast_event(TaskEvent("task_stopped", "unknown", {
+                    "message": "Got it — I've stopped. Let me know if you'd like me to pick this up again."
+                }))
+
+            elif msg_type == "pause":
+                # Graceful pause — agent finishes current action then waits
+                logger.info("Pause requested by user")
+                task_paused = True
+                if agent and hasattr(agent, 'pause_event'):
+                    agent.pause_event = True
+                await broadcast_event(TaskEvent("task_paused", "unknown", {
+                    "message": "Sure, I'll pause here. Take your time — I'll keep track of where we are."
+                }))
+
+            elif msg_type == "resume":
+                # Resume from pause
+                logger.info("Resume requested by user")
+                task_paused = False
+                if agent and hasattr(agent, 'pause_event'):
+                    agent.pause_event = False
+                await broadcast_event(TaskEvent("task_resumed", "unknown", {
+                    "message": "Thanks — I'll pick up right where we left off."
+                }))
+
+            elif msg_type == "takeover":
+                # Human wants manual control — agent steps aside gracefully
+                logger.info("Human takeover requested")
+                task_paused = True
+                if agent and hasattr(agent, 'pause_event'):
+                    agent.pause_event = True
+                await broadcast_event(TaskEvent("human_takeover", "unknown", {
+                    "message": "You've got it! I'll stay right here in case you need me. Just say 'continue' when you want me to take over again."
+                }))
+
+            elif msg_type == "give_back":
+                # User gives control back to agent
+                logger.info("User giving control back to agent")
+                task_paused = False
+                if agent and hasattr(agent, 'pause_event'):
+                    agent.pause_event = False
+                await broadcast_event(TaskEvent("agent_resumed", "unknown", {
+                    "message": "Thanks! I'll take it from here and continue where we left off."
+                }))
+
+            # ─── GEMINI LIVE AUDIO ──────────────────────────────
+
+            elif msg_type == "live_start":
+                logger.info("Starting Gemini Live Audio session")
+                if live_session and live_session.is_active:
+                    await live_session.stop()
+
+                async def _live_audio_out(b64):
+                    queue.put_nowait(json.dumps({"type": "live_audio_out", "data": b64}))
+
+                async def _live_transcript(direction, text):
+                    queue.put_nowait(json.dumps({"type": f"live_transcript_{direction}", "data": {"text": text}}))
+
+                async def _live_status(status, d):
+                    queue.put_nowait(json.dumps({"type": "live_status", "data": {"status": status, **d}}))
+
+                live_session = LiveSession(
+                    genai_client=agent.genai_client,
+                    tool_executor=agent.tool_executor,
+                    emit_fn=agent._emit,
+                    audio_out_fn=_live_audio_out,
+                    transcript_fn=_live_transcript,
+                    status_fn=_live_status,
+                    get_screenshot_fn=agent._get_screenshot_from_extension,
+                    policy_engine=agent.policy,
+                    ui_graph_registry=agent.ui_graph_registry,
+                )
+                # Wire connector registry for deterministic skill execution
+                live_session._connector_registry = agent.connectors
+
+                try:
+                    await live_session.start()
+                    # Send initial screenshot + track URL for UI graph detection
+                    if agent._ext_screenshot:
+                        await live_session.send_screenshot(agent._ext_screenshot)
+                    if agent._ext_url:
+                        live_session._current_url = agent._ext_url
+                except Exception as e:
+                    logger.error(f"Failed to start Live session: {e}")
+                    queue.put_nowait(json.dumps({
+                        "type": "live_status",
+                        "data": {"status": "error", "message": str(e)},
+                    }))
+                    live_session = None
+
+            elif msg_type == "live_audio_in":
+                if live_session and live_session.is_active:
+                    await live_session.send_audio(data.get("data", ""))
+
+            elif msg_type == "live_text":
+                if live_session and live_session.is_active:
+                    await live_session.send_text(data.get("text", ""))
+
+            elif msg_type == "live_stop":
+                logger.info("Stopping Gemini Live Audio session")
+                if live_session:
+                    await live_session.stop()
+                    live_session = None
 
             else:
-                await ws.send_text(json.dumps({
+                queue.put_nowait(json.dumps({
                     "type": "error",
                     "data": {"message": f"Unknown message type: {msg_type}"}
                 }))
 
     except WebSocketDisconnect:
-        connected_clients.discard(ws)
-        logger.info(f"Client disconnected ({len(connected_clients)} total)")
+        pass
+    finally:
+        sender.cancel()
+        client_queues.pop(ws, None)
+        # Clean up live session if this client owned it
+        if live_session:
+            await live_session.stop()
+            live_session = None
+        logger.info(f"Client disconnected ({len(client_queues)} total)")
 
 
 async def _run_task(instruction: str, mode: str = "api") -> None:
+    global task_running, task_cancel_event, current_task
     if not agent:
         return
+
+    # Acquire lock to prevent two concurrent run_task calls from racing
+    async with _task_lock:
+        if task_running:
+            await broadcast_event(TaskEvent("error", "unknown", {"message": "Another task is already running. Please wait."}))
+            return
+        task_running = True
+        task_cancel_event = asyncio.Event()
+        # Pass cancel event to agent so graph loop can check it
+        agent.cancel_event = task_cancel_event
+
     try:
         result = await agent.run_task(instruction, mode=mode)
         logger.info(f"Task {result.task_id} completed: {result.status}")
+    except asyncio.CancelledError:
+        logger.info("Task cancelled by user")
+        await broadcast_event(TaskEvent("task_failed", "unknown", {"error": "Task stopped by user"}))
     except Exception as e:
         logger.error(f"Task execution error: {e}")
         await broadcast_event(TaskEvent("error", "unknown", {"message": str(e)}))
+    finally:
+        async with _task_lock:
+            task_running = False
+            task_cancel_event = None
 
 
 # ─── REST ENDPOINTS ──────────────────────────────────────────
@@ -169,6 +407,7 @@ async def agent_card():
             "form_filling", "data_extraction", "supervised_execution",
             "multi_agent_orchestration", "retrieval_memory",
             "dom_intelligence", "anti_bot_resilience",
+            "google_workspace_integration", "connector_skills",
         ],
         "architecture": {
             "type": "multi_agent_graph",
@@ -247,6 +486,58 @@ async def get_memory(domain: str):
     })
 
 
+@app.get("/api/connectors")
+async def get_connectors():
+    """List all registered connectors and their skills."""
+    if not agent:
+        return JSONResponse({"error": "Agent not initialized"}, status_code=503)
+    connectors = []
+    for conn in agent.connectors.connectors.values():
+        skills = []
+        for skill in conn.skills.values():
+            skills.append({
+                "name": skill.name,
+                "full_name": skill.full_name,
+                "description": skill.description,
+                "mode": skill.mode.value,
+                "start_url": skill.start_url,
+                "tags": skill.tags,
+                "params": [
+                    {"name": p.name, "description": p.description, "type": p.type, "required": p.required}
+                    for p in skill.params
+                ],
+            })
+        connectors.append({
+            "name": conn.name,
+            "description": conn.description,
+            "icon": conn.icon,
+            "category": conn.category,
+            "skills": skills,
+        })
+    return JSONResponse({"connectors": connectors})
+
+
+@app.get("/api/skills/search")
+async def search_skills(q: str = ""):
+    """Search for skills matching a query."""
+    if not agent:
+        return JSONResponse({"error": "Agent not initialized"}, status_code=503)
+    skills = agent.connectors.find_skills(q) if q else agent.connectors.all_skills()
+    return JSONResponse({
+        "query": q,
+        "skills": [
+            {
+                "name": s.full_name,
+                "description": s.description,
+                "mode": s.mode.value,
+                "tags": s.tags,
+                "examples": s.examples,
+            }
+            for s in skills[:20]
+        ],
+    })
+
+
 @app.get("/api/patterns")
 async def get_patterns():
     """Get all known semantic patterns."""
@@ -265,3 +556,25 @@ async def get_patterns():
             for p in patterns
         ],
     })
+
+
+# ─── EXECUTION REPLAY API ────────────────────────────────
+
+@app.get("/api/replay/{task_id}")
+async def get_replay(task_id: str):
+    """Get execution replay for a task — timeline of actions for UI playback."""
+    if not agent:
+        return JSONResponse({"error": "Agent not initialized"}, status_code=503)
+    summary = agent.replay.get_session_summary(task_id)
+    if not summary:
+        return JSONResponse({"error": "Replay not found"}, status_code=404)
+    return JSONResponse(summary)
+
+
+@app.get("/api/replays")
+async def list_replays():
+    """List all saved execution replays."""
+    if not agent:
+        return JSONResponse({"error": "Agent not initialized"}, status_code=503)
+    replays = agent.replay.list_replays()
+    return JSONResponse({"replays": replays})
