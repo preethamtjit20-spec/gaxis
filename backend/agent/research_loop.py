@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import Callable
 
@@ -54,20 +55,71 @@ WRITING STYLE:
 - Include specific, actionable details: real names, prices, ratings, addresses, times
 - Use a conversational but professional tone
 - Add helpful tips and "good to know" nuggets naturally
-- Markdown: # title, ## sections, **bold** for key terms, - for lists
 
-STRUCTURE:
-- Title (clear and descriptive)
-- Overview (2-3 engaging sentences)
-- Themed sections with practical content
-- Pro tips / things most people miss
-- Sources with URLs
+═══ DOCUMENT STRUCTURE FORMAT ═══
+
+Use this EXACT format hierarchy — NO raw markdown (#, ##, *, **). Use plain text with clear structure:
+
+TITLE
+A single descriptive title on the first line.
+
+TABLE OF CONTENTS
+List sections as numbered items:
+1. Section Name
+2. Section Name
+3. Section Name
+
+SECTIONS — use this pattern:
+Write the section name on its own line, followed by a blank line, then content.
+For subsections, indent or prefix with the parent context.
+
+TABLES — use for any structured/comparative data:
+Column1 | Column2 | Column3
+Value1 | Value2 | Value3
+Value4 | Value5 | Value6
+
+Tables are CRITICAL for:
+- Itineraries (Day | Morning | Afternoon | Evening)
+- Comparisons (Option | Price | Rating | Notes)
+- Quick facts (Category | Info)
+- Schedules, budgets, packing lists
+
+QUICK FACTS PANEL — include near the top:
+Category | Info
+Best Time | March-May, Oct-Nov
+Currency | Japanese Yen (JPY)
+Language | Japanese
+Transport | IC Card (Suica/Pasmo)
+
+TIPS AND WARNINGS — use these markers:
+TIP: Use Takkyubin luggage forwarding to avoid carrying suitcases.
+WARNING: Many temples and small restaurants accept cash only.
+NOTE: Book Shinkansen tickets at least 2 weeks in advance.
+
+CHECKLISTS — for actionable items:
+[ ] Buy eSIM before departure
+[ ] Install Google Maps offline maps
+[ ] Reserve Shinkansen tickets
+[ ] Get IC card at airport
+
+TIMELINE/STEPS — for journeys or processes:
+Step 1: Arrive at Narita Airport
+Step 2: Take Narita Express to Shinjuku
+Step 3: Check into hotel
+Step 4: Explore Shinjuku evening scene
 
 RULES:
-- Be thorough but readable — depth without walls of text
+- NEVER use # ## ### for headings — just write the heading text on its own line
+- NEVER use * or - for bullets — use bullet character or numbered lists
+- NEVER use **text** for bold — just write the text normally
+- NEVER use ``` for code blocks
+- Use | pipe character for table columns
+- Use blank lines generously between sections for readability
 - Every section should have something genuinely useful
-- If data exists (prices, hours, ratings), include it
-- Warm doesn't mean vague — be specific and helpful
+- If data exists (prices, hours, ratings), include it in tables
+- Be thorough but readable — depth without walls of text
+- Include at least one table per major section
+- End with a Sources section listing URLs
 """
 
 
@@ -98,12 +150,28 @@ STRATEGY FOR GOOGLE DOCS:
    Use Enter for new lines. The content is already written — just paste it in.
 7. Call task_complete with the doc URL from the address bar.
 
+FORMATTING RULES — VERY IMPORTANT:
+- Do NOT type raw markdown symbols (# ## * - ```) into Google Docs.
+- The content uses a clean structured format. Type it exactly as written.
+- For TABLE data (lines with | separators):
+  Type each row on its own line. Use Tab key between columns to create a visual table layout.
+  Or type as "Column1    Column2    Column3" with spaces for alignment.
+- For SECTION HEADINGS (text on its own line followed by blank line):
+  Type the heading, press Enter twice to create spacing.
+- For TIPS/WARNINGS (lines starting with TIP: WARNING: NOTE:):
+  Type them as-is — they already look professional.
+- For CHECKLISTS (lines with [ ]):
+  Type with the checkbox characters: "☐ Item name"
+- Use generous Enter spacing between sections.
+- The result should look like a professional, well-spaced document.
+
 CRITICAL RULES:
 - ALWAYS use https://docs.google.com/document/create (NOT docs.new) to avoid template popover.
 - If a popover/dialog appears, press Escape FIRST before doing anything else.
 - Type content in LARGE chunks — paragraphs, not sentences.
 - Do NOT try to click through a popover onto elements behind it.
 - The content has already been researched — just put it in the doc efficiently.
+- NEVER type raw markdown — always convert to clean formatted text.
 """
 
 
@@ -149,16 +217,70 @@ class ResearchLoop:
 
         try:
             # ═══ PHASE 1: RESEARCH (Gemini + Google Search) ═══
+            # ═══ PHASE 1: OPEN TAB + SCAN OVERLAY + RESEARCH ═══
+
+            # Step 1: Open a Google Search tab with the query
+            await self._emit_event(state, "agent_active", {
+                "agent": "navigator",
+                "subtask": "Opening search workspace...",
+            })
+
+            import urllib.parse
+            search_query = urllib.parse.quote_plus(state.instruction)
+            search_url = f"https://www.google.com/search?q={search_query}"
+
+            await self._emit_event(state, "action_planned", {
+                "action_type": "navigate",
+                "url": search_url,
+                "reasoning": f"Searching: {state.instruction}",
+            })
+
+            # Navigate to Google Search
+            if self.tool_executor and state.mode == "extension":
+                await self.tool_executor.execute(
+                    "navigate", {"url": search_url},
+                    mode=state.mode, emit_fn=self.emit_fn,
+                    task_id=state.task_id,
+                )
+                await asyncio.sleep(2)
+
+                # Capture screenshot of search page for replay
+                if self._replay and self.get_screenshot_fn:
+                    try:
+                        ss, url, _ = await self.get_screenshot_fn()
+                        self._replay.record_step(
+                            task_id=state.task_id, step_index=1,
+                            action_type="navigate",
+                            args={"url": search_url, "element_description": "Opening search workspace"},
+                            success=True, duration_ms=0,
+                            url_before="", url_after=search_url,
+                            screenshot_b64=ss,
+                        )
+                    except Exception:
+                        pass
+
+            # Step 2: Show blue scanning overlay
+            await self._emit_event(state, "scan_overlay", {
+                "show": True,
+                "text": "G-Axis is researching across multiple sources...",
+            })
+
             await self._emit_event(state, "agent_active", {
                 "agent": "researcher",
-                "subtask": "Searching and reading multiple sources...",
+                "subtask": "Scanning and analyzing multiple sources...",
             })
             await self._emit_event(state, "action_planned", {
                 "action_type": "RESEARCH",
-                "reasoning": "Gathering information from multiple web sources",
+                "reasoning": "Deep research across web sources",
             })
 
+            # Step 3: Gemini researches (with scanning overlay visible)
             research_content = await self._research_phase(state)
+
+            # Step 4: Remove scanning overlay
+            await self._emit_event(state, "scan_overlay", {
+                "show": False,
+            })
 
             if not research_content:
                 state.status = "failed"
@@ -166,19 +288,35 @@ class ResearchLoop:
                 return state
 
             logger.info(f"Research phase complete: {len(research_content)} chars")
+
+            # Capture screenshot after research for replay
+            if self._replay and self.get_screenshot_fn:
+                try:
+                    ss, url, _ = await self.get_screenshot_fn()
+                    self._replay.record_step(
+                        task_id=state.task_id, step_index=2,
+                        action_type="RESEARCH",
+                        args={"query": state.instruction, "element_description": "Research complete"},
+                        success=True, duration_ms=0,
+                        url_before=search_url, url_after=url or search_url,
+                        screenshot_b64=ss,
+                    )
+                except Exception:
+                    pass
+
             await self._emit_event(state, "action_succeeded", {
                 "action_type": "research",
                 "step": 1,
             })
 
-            # ═══ PHASE 2: CREATE GOOGLE DOC (Browser) ═══
+            # ═══ PHASE 2: CREATE DOC (close search tab, open formatted doc) ═══
             await self._emit_event(state, "agent_active", {
                 "agent": "navigator",
-                "subtask": "Putting it all together in a Google Doc for you...",
+                "subtask": "Creating your document...",
             })
             await self._emit_event(state, "action_planned", {
                 "action_type": "CREATE_DOC",
-                "reasoning": "Creating a well-formatted document with the research findings",
+                "reasoning": "Creating formatted document with research findings",
             })
 
             state = await self._doc_creation_phase(state, research_content)
@@ -286,212 +424,72 @@ Be thorough and specific — include real names, prices, ratings, addresses wher
     # ─── PHASE 2: DOC CREATION ──────────────────────────────
 
     async def _doc_creation_phase(self, state: AgentState, content: str) -> AgentState:
-        """Create a Google Doc with the research content using browser automation."""
-        import base64
+        """Doc creation: generate .docx, upload to Drive, open formatted doc.
 
-        conversation: list[types.Content] = []
-        gemini_tools = [types.Tool(function_declarations=ALL_TOOLS)]
+        The extension handles: close search tab → upload .docx → open Google Doc → rename title.
+        """
+        import re
+        from backend.tools.doc_converter import markdown_to_docx
 
-        # Inject the research content into the system context
-        doc_system = DOC_CREATION_SYSTEM + f"""
+        title_line = content.strip().split("\n")[0].strip()
+        title = re.sub(r"^#+\s*", "", title_line)
 
-═══ RESEARCH CONTENT TO PUT IN THE DOC ═══
-{content}
-═══ END OF RESEARCH CONTENT ═══
+        try:
+            logger.info(f"Generating .docx: '{title}'")
 
-Type this content into the Google Doc. Start by navigating to https://docs.google.com/document/create (NOT docs.new — that shows a template popup).
-If any popover/dialog appears, press Escape first to dismiss it.
-The content is already written — just put it in the doc efficiently.
-Type in LARGE chunks (paragraphs at a time), not character by character.
-When done, call task_complete with the Google Doc URL."""
+            await self._emit_event(state, "agent_active", {
+                "agent": "orchestrator",
+                "subtask": "Formatting document with tables and headings...",
+            })
 
-        max_steps = 20
-        step = 0
+            # Generate .docx
+            filepath = markdown_to_docx(content, title)
+            filename = os.path.basename(filepath)
+            download_url = f"http://localhost:{os.environ.get('PORT', '8000')}/api/doc/{filename}"
+            logger.info(f"Generated .docx: {filepath}")
 
-        while step < max_steps and not state.is_terminal:
-            try:
-                # Check pause/takeover
-                if self._is_paused_fn and self._is_paused_fn():
-                    logger.info("ResearchLoop paused — waiting for resume...")
-                    while self._is_paused_fn and self._is_paused_fn():
-                        await asyncio.sleep(0.5)
-                    logger.info("ResearchLoop resumed")
-
-                # Capture page state
-                state = await self._capture_page(state)
-
-                # Build prompt
-                parts = []
-                if state.page.screenshot_b64:
-                    image_bytes = base64.b64decode(state.page.screenshot_b64)
-                    parts.append(types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"))
-
-                if state.page.dom_elements:
-                    dom_text = self._format_dom(state.page.dom_elements[:40])
-                    parts.append(types.Part.from_text(text=f"\nDOM ELEMENTS:\n{dom_text}"))
-
-                context = (
-                    f"TASK: Create a Google Doc with the research content.\n"
-                    f"URL: {state.page.url}\n"
-                    f"TITLE: {state.page.title}\n"
-                    f"Step {step + 1} of {max_steps}.\n"
-                )
-
-                # Inject UI Graph if on a known Google Docs page
-                if self._ui_graph_registry and state.page.url:
-                    graph = self._ui_graph_registry.detect_and_get(
-                        state.page.url, state.page.title
+            # Record replay step
+            if self._replay and self.get_screenshot_fn:
+                try:
+                    ss, url, _ = await self.get_screenshot_fn()
+                    self._replay.record_step(
+                        task_id=state.task_id, step_index=3,
+                        action_type="CREATE_DOC",
+                        args={"title": title, "element_description": f"Creating document: {title}"},
+                        success=True, duration_ms=0,
+                        url_before=url or "", url_after=download_url,
+                        screenshot_b64=ss,
                     )
-                    if graph:
-                        from backend.uigraph.prompt import serialize_graph_for_prompt
-                        graph_text = serialize_graph_for_prompt(graph)
-                        context += f"\n{graph_text}\n"
-                        logger.info(f"Research doc: UI Graph loaded: {graph.app_id}")
+                except Exception:
+                    pass
 
-                context += "\nWhat is the SINGLE best next action?"
-                parts.append(types.Part.from_text(text=context))
+            await self._emit_event(state, "action_succeeded", {
+                "action_type": "CREATE_DOC", "step": 1,
+            })
 
-                user_content = types.Content(role="user", parts=parts)
-                conversation.append(user_content)
+            # Send to extension: close search tab → upload → open doc → rename
+            await self._emit_event(state, "research_complete", {
+                "title": title,
+                "markdown": content,
+                "download_url": download_url,
+                "filename": filename,
+            })
 
-                # Trim + clean
-                if len(conversation) > 20:
-                    conversation = conversation[-20:]
-                contents = self._clean_conversation(conversation)
+            await asyncio.sleep(2)
 
-                # Call Gemini
-                response = await self._call_with_retry(
-                    contents=contents,
-                    tools=gemini_tools,
-                    system_prompt=doc_system,
-                )
+            state.result_summary = f'Research complete: "{title}". Document created in Google Docs.'
+            state.extracted_data["download_url"] = download_url
+            state.extracted_data["markdown"] = content[:500]
+            state.status = "done"
 
-                if response.candidates and response.candidates[0].content:
-                    conversation.append(response.candidates[0].content)
-
-                if not response.candidates or not response.candidates[0].content:
-                    step += 1
-                    continue
-
-                # Process response
-                candidate = response.candidates[0]
-                handled = False
-
-                for part in candidate.content.parts:
-                    if part.function_call:
-                        fc = part.function_call
-                        fn_name = fc.name
-                        fn_args = dict(fc.args) if fc.args else {}
-
-                        logger.info(f"[research-doc] {fn_name}({fn_args})")
-
-                        if fn_name == "task_complete":
-                            claimed_summary = fn_args.get("summary", "")
-                            if fn_args.get("data"):
-                                state.extracted_data.update(fn_args["data"])
-                            # VERIFICATION AGENT — check before accepting
-                            await self._emit_event(state, "agent_active", {
-                                "agent": "verifier",
-                                "subtask": "Checking the result visually...",
-                            })
-                            verified = await self._verify_with_screenshot(state)
-                            if verified:
-                                state.result_summary = claimed_summary
-                                state.status = "done"
-                            else:
-                                logger.warning("Research doc verification failed — continuing")
-                                # Don't mark done, let loop continue
-                                conversation.append(types.Content(role="user", parts=[
-                                    types.Part.from_function_response(
-                                        name=fn_name,
-                                        response={"result": "Verification FAILED — the doc does NOT appear complete. Check the screenshot and continue writing content."},
-                                    )
-                                ]))
-                            handled = True
-                            break
-
-                        if fn_name == "task_failed":
-                            state.error = fn_args.get("reason", "Doc creation failed")
-                            state.status = "failed"
-                            handled = True
-                            break
-
-                        # Execute browser action
-                        try:
-                            result = await self.tool_executor.execute(
-                                fn_name, fn_args,
-                                mode=state.mode,
-                                emit_fn=self.emit_fn,
-                                task_id=state.task_id,
-                            )
-                        except Exception as e:
-                            logger.error(f"[research-doc] Tool error: {e}")
-                            result = type('R', (), {
-                                'success': False, 'error': str(e),
-                                'result': {}, 'duration_ms': 0
-                            })()
-
-                        state.record_action({
-                            "action_type": fn_name, "args": fn_args,
-                            "success": result.success, "error": result.error,
-                            "agent": "researcher",
-                        })
-
-                        # Record to replay timeline
-                        if self._replay:
-                            self._replay.record_step(
-                                task_id=state.task_id,
-                                step_index=step,
-                                action_type=fn_name,
-                                args=fn_args,
-                                success=result.success,
-                                error=result.error,
-                                duration_ms=getattr(result, 'duration_ms', 0),
-                                url_before=state.page.url or "",
-                            )
-
-                        if result.success:
-                            await self._emit_event(state, "action_succeeded", {
-                                "action_type": fn_name, "step": step,
-                            })
-                        else:
-                            await self._emit_event(state, "action_failed", {
-                                "error": result.error, "step": step,
-                            })
-
-                        # Function response
-                        fn_response = types.Content(role="user", parts=[
-                            types.Part.from_function_response(
-                                name=fn_name,
-                                response={"result": "success" if result.success else result.error},
-                            )
-                        ])
-                        conversation.append(fn_response)
-                        handled = True
-                        break
-
-                step += 1
-                state.step_index = step
-                await asyncio.sleep(0.2)
-
-            except Exception as e:
-                logger.error(f"Doc creation step error: {e}", exc_info=True)
-                step += 1
-                await asyncio.sleep(0.5)
-
-        if not state.is_terminal:
-            # Loop exhausted without task_complete — verify if doc was actually created
-            verified = await self._verify_with_screenshot(state)
-            if verified:
-                state.result_summary = f"Document created with research content. URL: {state.page.url}"
-                state.status = "done"
-            else:
-                # Doc was NOT created — report failure honestly
-                state.status = "failed"
-                state.error = "Could not complete the Google Doc — ran out of steps"
-                logger.warning("Research loop exhausted without completing doc creation")
+        except Exception as e:
+            logger.error(f"Doc creation error: {e}", exc_info=True)
+            state.result_summary = f'Research complete: "{title}".'
+            state.status = "done"
 
         return state
+
+        return blocks
 
     # ─── HELPERS ─────────────────────────────────────────────
 

@@ -344,6 +344,66 @@ function clearOverlay() {
   if (scanBar) scanBar.remove();
 }
 
+function showScanOverlay(text) {
+  removeScanOverlay();
+  const scan = document.createElement("div");
+  scan.id = "gaxis-scan-fullscreen";
+  scan.innerHTML = `
+    <div style="
+      position: fixed; inset: 0; z-index: 2147483646;
+      background: rgba(26, 115, 232, 0.08);
+      backdrop-filter: blur(1px);
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      pointer-events: none;
+      animation: gaxis-scan-pulse 2s ease-in-out infinite;
+    ">
+      <div style="
+        background: rgba(26, 115, 232, 0.12);
+        border: 2px solid rgba(26, 115, 232, 0.3);
+        border-radius: 16px;
+        padding: 20px 32px;
+        display: flex; align-items: center; gap: 14px;
+        box-shadow: 0 4px 24px rgba(26, 115, 232, 0.15);
+      ">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#1a73e8" stroke-width="2" style="animation: gaxis-scan-spin 1.5s linear infinite;">
+          <circle cx="12" cy="12" r="10" stroke-dasharray="40 20"/>
+        </svg>
+        <span style="
+          font-family: 'Google Sans', -apple-system, sans-serif;
+          font-size: 15px; font-weight: 500;
+          color: #1a73e8;
+        ">${text}</span>
+      </div>
+    </div>
+    <div style="
+      position: fixed; top: 0; left: 0; right: 0; height: 3px;
+      z-index: 2147483647;
+      background: linear-gradient(90deg, transparent, #1a73e8, transparent);
+      animation: gaxis-scan-line 2s ease-in-out infinite;
+    "></div>
+    <style>
+      @keyframes gaxis-scan-pulse {
+        0%, 100% { background: rgba(26, 115, 232, 0.06); }
+        50% { background: rgba(26, 115, 232, 0.12); }
+      }
+      @keyframes gaxis-scan-spin {
+        to { transform: rotate(360deg); }
+      }
+      @keyframes gaxis-scan-line {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(100%); }
+      }
+    </style>
+  `;
+  document.body.appendChild(scan);
+}
+
+function removeScanOverlay() {
+  const el = document.getElementById("gaxis-scan-fullscreen");
+  if (el) el.remove();
+}
+
 function showActionOverlay(data) {
   const overlay = ensureOverlay();
   clearOverlay();
@@ -1357,6 +1417,16 @@ safeAddListener((message, sender, sendResponse) => {
 
     case MSG.CLEAR_OVERLAY:
       clearOverlay();
+      removeScanOverlay();
+      sendResponse({ ok: true });
+      break;
+
+    case MSG.SCAN_OVERLAY:
+      if (message.data?.show) {
+        showScanOverlay(message.data.text || "Researching...");
+      } else {
+        removeScanOverlay();
+      }
       sendResponse({ ok: true });
       break;
 
@@ -1495,7 +1565,7 @@ function createControlBar() {
       <span class="gaxis-bar-status" id="gaxis-bar-status">Starting...</span>
       <span class="gaxis-bar-agent" id="gaxis-bar-agent">Initializing</span>
     </div>
-    <span class="gaxis-bar-steps" id="gaxis-bar-steps">0/${maxSteps}</span>
+    <span class="gaxis-bar-steps" id="gaxis-bar-steps">Step 0</span>
     <div class="gaxis-bar-divider"></div>
     <button class="gaxis-bar-btn pause" id="gaxis-bar-pause" title="Pause">
       <svg viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
@@ -1575,7 +1645,7 @@ function updateControlBarSteps(step, max) {
   maxSteps = max || 30;
   const stepsEl = document.getElementById("gaxis-bar-steps");
   const progressEl = document.getElementById("gaxis-bar-progress");
-  if (stepsEl) stepsEl.textContent = `${step}/${maxSteps}`;
+  if (stepsEl) stepsEl.textContent = `Step ${step}`;
   if (progressEl) progressEl.style.width = `${Math.min((step / maxSteps) * 100, 100)}%`;
 }
 
@@ -1610,9 +1680,12 @@ safeAddListener((message) => {
     stepCount++;
     updateControlBarSteps(stepCount, maxSteps);
     if (message.data?.action_type) {
+      const desc = message.data.element_description?.substring(0, 50)
+        || message.data.reasoning?.substring(0, 50)
+        || "";
       updateControlBarStatus(
         message.data.action_type.toUpperCase(),
-        message.data.element_description?.substring(0, 40) || ""
+        desc
       );
     }
   }

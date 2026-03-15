@@ -46,12 +46,14 @@ export const MSG = {
   CONFIRM_ACTION: "gaxis:confirm_action",
   STEERING_RECEIVED: "gaxis:steering_received",
   STEERING_APPLIED: "gaxis:steering_applied",
+  RESEARCH_COMPLETE: "gaxis:research_complete",
 
   // Background <-> Content Script
   CAPTURE_SCREENSHOT: "gaxis:capture_screenshot",
   EXECUTE_ACTION: "gaxis:execute_action",
   SHOW_OVERLAY: "gaxis:show_overlay",
   CLEAR_OVERLAY: "gaxis:clear_overlay",
+  SCAN_OVERLAY: "gaxis:scan_overlay",
   HIGHLIGHT_ELEMENT: "gaxis:highlight_element",
 
   // DOM intelligence

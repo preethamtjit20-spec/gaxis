@@ -345,9 +345,8 @@ class FastAgentLoop:
                     else:
                         # Fully deterministic — done!
                         state.status = "done"
-                        state.result_summary = (
-                            f"Completed {conn_name}.{skill_name}: "
-                            + ", ".join(f"{k}={v}" for k, v in result.data.items() if v)
+                        state.result_summary = self._friendly_summary(
+                            conn_name, skill_name, result.data,
                         )
                         logger.info(f"⚡ Deterministic complete: {state.result_summary[:80]}")
                         # Navigate to the scheduled date so user can see the event
@@ -1695,6 +1694,36 @@ class FastAgentLoop:
             logger.warning(f"Verify: error ({e}) — accepting claim")
 
         return True  # On error, accept to avoid blocking
+
+    def _friendly_summary(self, conn_name: str, skill_name: str, data: dict) -> str:
+        """Generate a human-friendly summary for deterministic skill completions."""
+        title = data.get("title", "")
+        date = data.get("start_date", data.get("date", ""))
+        time_str = data.get("start_time", "")
+
+        if "calendar" in conn_name and "create" in skill_name:
+            parts = [f'Created calendar event "{title}"' if title else "Created a calendar event"]
+            if date:
+                parts.append(f"on {date}")
+            if time_str:
+                parts.append(f"at {time_str}")
+            return " ".join(parts) + "."
+        elif "gmail" in conn_name and "send" in skill_name:
+            to = data.get("to", "")
+            return f'Sent email to {to}.' if to else "Email sent successfully."
+        elif "gmail" in conn_name and "compose" in skill_name:
+            return f'Composed email "{title}".' if title else "Email composed."
+        elif "docs" in conn_name:
+            return f'Created Google Doc "{title}".' if title else "Google Doc created."
+        elif "sheets" in conn_name:
+            return f'Updated Google Sheet "{title}".' if title else "Google Sheet updated."
+        elif "meet" in conn_name:
+            return "Google Meet session set up."
+        elif "drive" in conn_name:
+            return f'Opened "{title}" in Drive.' if title else "Google Drive action completed."
+        else:
+            # Fallback: still human-readable
+            return f"Completed {skill_name.replace('_', ' ')} successfully."
 
     async def _get_latest_screenshot(self, state: AgentState) -> str | None:
         """Get the latest screenshot, requesting a fresh one if needed."""

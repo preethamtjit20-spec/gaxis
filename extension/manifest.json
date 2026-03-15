@@ -1,6 +1,7 @@
 {
   "manifest_version": 3,
   "name": "G-Axis",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwShFb21JRP9rSb0I6gCLT67RyyqI5KnEPsK897ArAGHKKEqFsGZR8+ZcTC/IbVrk5fQfgmFrlxaZ29iFYAGliB/WQ94PIv0iJiwul9/4mPqkjAD7Z/XmK/FtLfOEJF3neJR+l8pn49eZ4vxDYm1I8ns3MfXespjUxRB4ASBEgLLZTvgjth69i9kH/M3c/OKpaanznzO6zAFTiULLsDo3XlaOnuXkZGONNlBbXlW+nYGE2dOhnK04VZ0fgW4cLy/KwWXN2SSAKXbqvz11wtu8Ur2hw1ccuOPZKjlxeOXr/zuG0cZEF0JIYBwlWtrBiQIMqG8SiWsYXgR2afg2Py9P3wIDAQAB",
   "version": "0.1.0",
   "description": "AI browser agent that sees, hears, and acts — with your permission.",
   "permissions": [
@@ -13,9 +14,14 @@
     "webNavigation",
     "alarms",
     "tabGroups",
-    "debugger"
+    "debugger",
+    "identity"
   ],
   "host_permissions": ["<all_urls>"],
+  "oauth2": {
+    "client_id": "557861773102-dpvs5pnilv928fkhm2fv1ipf83p5lk0a.apps.googleusercontent.com",
+    "scopes": ["https://www.googleapis.com/auth/drive.file"]
+  },
   "background": {
     "service_worker": "background/service-worker.js",
     "type": "module"

@@ -18,3 +18,4 @@ memory-store/
 .terraform/
 terraform.tfvars
 .replays/
+research-docs/

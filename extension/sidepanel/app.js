@@ -950,25 +950,22 @@ function handleMessage(msg) {
       break;
 
     case MSG.ACTION_PLANNED: {
-      const actionDesc = msg.data?.reasoning || msg.data?.action_type?.toUpperCase() || "Executing action";
-      setStatus(
-        `${msg.data?.action_type?.toUpperCase() || "Action"}`,
-        "executing",
-        actionDesc
-      );
-      updateAgentAvatar("navigator");
+      const rawAction = msg.data?.action_type || "action";
+      const n = narrativeDescription(rawAction, msg.data);
+      setStatus(n.title, "executing", n.subtitle);
+      updateAgentAvatar(n.agentType || "navigator");
       addTimelineEntry(
         "action",
-        msg.data?.action_type?.toUpperCase() || "ACTION",
-        msg.data?.reasoning || "",
+        n.title,
+        n.subtitle,
         msg.data?.risk_level,
         msg.data?.confidence,
-        "navigator"
+        n.agentType || "navigator"
       );
       // Activity tracker: mark previous active done, add new action step
       const prevAction = findLastActiveStep();
       if (prevAction >= 0) updateActivityStep(prevAction, "done");
-      addActivityStep(actionDesc, "active");
+      addActivityStep(n.subtitle || n.title, "active");
 
       // Operator window: advance to next pending action
       advanceOperatorPlan(msg.data?.action_type, msg.data?.reasoning);
@@ -1154,6 +1151,14 @@ function handleMessage(msg) {
       addTimelineEntry("error", "Error", msg.data?.message || "Unknown error", null, null, "error");
       break;
 
+    case MSG.RESEARCH_COMPLETE: {
+      const md = msg.data?.markdown || "";
+      const downloadUrl = msg.data?.download_url || "";
+      const docTitle = msg.data?.title || "Research";
+      showResearchInline(docTitle, md, downloadUrl);
+      break;
+    }
+
     // ── Live Audio ──
     case MSG.LIVE_AUDIO_OUT:
       if (liveMode && msg.data) playLiveAudioChunk(msg.data);
@@ -1238,10 +1243,17 @@ function narrativeDescription(actionType, data) {
       return { title: "Opening workspace", subtitle: `Navigating to ${dest}`, group: "navigate", agentType: "navigator" };
     }
     case "fill_form": {
-      const fieldNames = fields.map(f => f.label || f.field || f.name).filter(Boolean);
-      const subtitle = fieldNames.length > 0
-        ? `Filling in ${fieldNames.join(", ")}`
-        : "Filling in form details";
+      const fieldNames = fields.map(f =>
+        f.label || f.field || f.name
+        || (f.hints && (f.hints.aria || f.hints.placeholder || f.hints.text))
+        || ""
+      ).filter(Boolean);
+      let subtitle = "Filling in form details";
+      if (fieldNames.length === 1) {
+        subtitle = `Adding ${fieldNames[0].toLowerCase()}`;
+      } else if (fieldNames.length > 1) {
+        subtitle = `Adding ${fieldNames.map(n => n.toLowerCase()).join(", ")}`;
+      }
       return { title: "Filling details", subtitle, group: "fill_form", agentType: "form_filler" };
     }
     case "type_text":
@@ -1757,6 +1769,106 @@ function resetConfirmPosition() {
     els.confirmCard.style.left = "";
     els.confirmCard.style.top = "";
   }
+}
+
+function showResearchInline(title, markdown, downloadUrl) {
+  // Add research card to the chat/timeline area
+  const card = document.createElement("div");
+  card.className = "research-card";
+
+  // Simple markdown → HTML conversion
+  const htmlContent = markdownToHtml(markdown);
+
+  // Preview (first 300 chars of plain text)
+  const plainPreview = markdown.replace(/[#*|☐\[\]]/g, "").substring(0, 200).trim();
+
+  card.innerHTML = `
+    <div class="research-card-header">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+        <line x1="16" y1="13" x2="8" y2="13"/>
+        <line x1="16" y1="17" x2="8" y2="17"/>
+        <polyline points="10 9 9 9 8 9"/>
+      </svg>
+      <span class="research-card-title">${escapeHtml(title)}</span>
+      <button class="research-expand-btn" title="Expand">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+    </div>
+    <div class="research-card-preview">${escapeHtml(plainPreview)}...</div>
+    <div class="research-card-content hidden">${htmlContent}</div>
+    <div class="research-card-actions">
+      ${downloadUrl ? `<a href="${escapeHtml(downloadUrl)}" class="research-download-btn" download>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/>
+          <line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        Download .docx
+      </a>` : ""}
+    </div>
+  `;
+
+  // Bind expand/collapse via addEventListener (CSP compliant)
+  const expandBtn = card.querySelector(".research-expand-btn");
+  const contentEl = card.querySelector(".research-card-content");
+  const previewEl = card.querySelector(".research-card-preview");
+  expandBtn.addEventListener("click", () => {
+    const isCollapsed = contentEl.classList.contains("hidden");
+    contentEl.classList.toggle("hidden");
+    previewEl.classList.toggle("hidden");
+    expandBtn.innerHTML = isCollapsed
+      ? `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 15 12 9 6 15"/></svg>`
+      : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>`;
+    expandBtn.title = isCollapsed ? "Collapse" : "Expand";
+  });
+
+  // Insert before the complete section or at end of timeline
+  if (els.timeline) {
+    els.timeline.appendChild(card);
+  }
+  requestAnimationFrame(() => {
+    els.contentArea.scrollTop = els.contentArea.scrollHeight;
+  });
+}
+
+function markdownToHtml(md) {
+  let html = escapeHtml(md);
+  // Headings
+  html = html.replace(/^### (.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^## (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^# (.+)$/gm, '<h2>$1</h2>');
+  // Bold
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  // Bullets
+  html = html.replace(/^[•\-\*] (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
+  // Checklists
+  html = html.replace(/^☐ (.+)$/gm, '<div class="checklist-item">☐ $1</div>');
+  html = html.replace(/^\[ \] (.+)$/gm, '<div class="checklist-item">☐ $1</div>');
+  // Tables (pipe-separated)
+  html = html.replace(/((?:^.+\|.+$\n?){2,})/gm, (match) => {
+    const rows = match.trim().split("\n");
+    let table = '<table class="research-table">';
+    rows.forEach((row, idx) => {
+      const cells = row.split("|").map(c => c.trim()).filter(Boolean);
+      const tag = idx === 0 ? "th" : "td";
+      table += "<tr>" + cells.map(c => `<${tag}>${c}</${tag}>`).join("") + "</tr>";
+    });
+    return table + "</table>";
+  });
+  // Callouts
+  html = html.replace(/^(TIP|WARNING|NOTE): (.+)$/gm, (_, type, text) => {
+    const cls = type.toLowerCase();
+    return `<div class="callout callout-${cls}"><strong>${type}:</strong> ${text}</div>`;
+  });
+  // Paragraphs (double newlines)
+  html = html.replace(/\n\n/g, '</p><p>');
+  html = '<p>' + html + '</p>';
+  // Clean up empty paragraphs
+  html = html.replace(/<p>\s*<\/p>/g, '');
+  return html;
 }
 
 function showComplete(success, data) {

@@ -49,6 +49,20 @@ async def _exec(
         task_id=task_id,
     )
 
+    # Emit action_succeeded/failed so frontend can track step count
+    if emit_fn:
+        from backend.agent.core import TaskEvent
+        if result.success:
+            await emit_fn(TaskEvent("action_succeeded", task_id, {
+                "action_type": fn_name,
+                "duration_ms": result.duration_ms,
+            }))
+        else:
+            await emit_fn(TaskEvent("action_failed", task_id, {
+                "action_type": fn_name,
+                "error": result.error or "Action failed",
+            }))
+
     # Record to replay with screenshot
     if _replay_ref and _replay_task_id == task_id:
         _replay_step_counter += 1

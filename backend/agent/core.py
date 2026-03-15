@@ -410,10 +410,15 @@ class GAxisAgent:
         # If ready to execute, store collected slots for the state machine
         if result.get("ready_to_execute") and result.get("plan"):
             plan = result["plan"]
-            result["refined_instruction"] = plan.get(
-                "refined_instruction",
-                plan.get("action", user_message),
-            )
+            refined = plan.get("refined_instruction", "") or plan.get("action", "")
+            # For general/research/browse intents, the LLM often returns just the
+            # intent name — fall back to the original user message
+            intent = (result.get("intent") or "").upper()
+            if not refined or refined.strip().rstrip(":") in (
+                "RESEARCH", "GENERAL", "BROWSE", ""
+            ) or intent in ("RESEARCH", "GENERAL", "BROWSE"):
+                refined = refined if len(refined) > 20 else user_message
+            result["refined_instruction"] = refined
             # Store planner's collected slots — state machine will use these
             # instead of re-extracting from instruction
             self._planner_slots = plan.get("slots", {})

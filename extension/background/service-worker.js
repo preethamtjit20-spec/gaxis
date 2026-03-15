@@ -8,6 +8,8 @@
  * Manages WebSocket lifecycle, message routing, DOM snapshots, and settings.
  */
 
+// Docs are created server-side as .docx files (no OAuth needed)
+
 import { MSG, DEFAULT_SETTINGS } from "../shared/types.js";
 
 let ws = null;
@@ -358,6 +360,8 @@ function handleBackendMessage(msg) {
     confirm_action: MSG.CONFIRM_ACTION,
     steering_received: MSG.STEERING_RECEIVED,
     steering_applied: MSG.STEERING_APPLIED,
+    research_complete: MSG.RESEARCH_COMPLETE,
+    scan_overlay: null, // Handled below — sent to content script
     task_stopped: MSG.TASK_STOPPED,
     task_paused: MSG.TASK_PAUSED,
     task_resumed: MSG.TASK_RESUMED,
@@ -531,6 +535,114 @@ function handleBackendMessage(msg) {
 
   const extType = typeMap[msg.type] || MSG.ERROR;
   safeBroadcast({ type: extType, data: msg.data, task_id: msg.task_id });
+
+  // Scan overlay — show/hide blue scanning overlay on the agent tab
+  if (msg.type === "scan_overlay") {
+    if (agentTabId != null) {
+      try {
+        chrome.tabs.sendMessage(agentTabId, { type: MSG.SCAN_OVERLAY, data: msg.data }).catch(() => {});
+      } catch (_) {}
+    }
+  }
+
+  // Research complete — close search tab → upload .docx → open formatted doc → rename
+  if (msg.type === "research_complete" && msg.data?.download_url) {
+    (async () => {
+      try {
+        const title = msg.data.title || "Research Document";
+        const downloadUrl = msg.data.download_url;
+
+        // 1. Close the search/scanning tab
+        if (agentTabId != null && agentTabId !== originalTabId) {
+          try {
+            await chrome.tabs.remove(agentTabId);
+            workspaceTabs.delete(agentTabId);
+            console.log("[G-Axis] Closed search tab:", agentTabId);
+            agentTabId = originalTabId;
+          } catch (_) {}
+        }
+
+        // 2. Get OAuth token
+        const token = await new Promise((resolve, reject) => {
+          chrome.identity.getAuthToken({ interactive: true }, (t) => {
+            if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+            else resolve(t);
+          });
+        });
+
+        // 3. Fetch the .docx from backend
+        const docxResponse = await fetch(downloadUrl);
+        const docxBlob = await docxResponse.blob();
+        console.log("[G-Axis] Fetched .docx:", docxBlob.size, "bytes");
+
+        // 4. Upload to Google Drive as Google Doc
+        const metadata = JSON.stringify({
+          name: title,
+          mimeType: "application/vnd.google-apps.document",
+        });
+        const form = new FormData();
+        form.append("metadata", new Blob([metadata], { type: "application/json" }));
+        form.append("file", docxBlob);
+
+        const uploadRes = await fetch(
+          "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&convert=true",
+          {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}` },
+            body: form,
+          }
+        );
+
+        if (!uploadRes.ok) throw new Error(`Drive upload failed: ${uploadRes.status}`);
+
+        const file = await uploadRes.json();
+        const docUrl = `https://docs.google.com/document/d/${file.id}/edit`;
+        console.log("[G-Axis] Google Doc created:", docUrl);
+
+        // 5. Open formatted doc in workspace tab
+        const docTab = await openWorkspaceTab(docUrl);
+
+        // 6. Wait for doc to load, then rename title autonomously
+        if (docTab?.id) {
+          agentTabId = docTab.id;
+          chrome.tabs.onUpdated.addListener(function listener(tabId, info) {
+            if (tabId === docTab.id && info.status === "complete") {
+              chrome.tabs.onUpdated.removeListener(listener);
+              setTimeout(async () => {
+                try {
+                  await chrome.scripting.executeScript({
+                    target: { tabId: docTab.id },
+                    func: (docTitle) => {
+                      // Click the title input and rename
+                      const titleInput = document.querySelector('input.docs-title-input');
+                      if (titleInput) {
+                        titleInput.value = docTitle;
+                        titleInput.dispatchEvent(new Event("input", { bubbles: true }));
+                        titleInput.dispatchEvent(new Event("change", { bubbles: true }));
+                        // Also try direct focus + key events
+                        titleInput.focus();
+                        titleInput.select();
+                        document.execCommand("insertText", false, docTitle);
+                        titleInput.blur();
+                      }
+                    },
+                    args: [title],
+                  });
+                  console.log("[G-Axis] Renamed doc to:", title);
+                } catch (err) {
+                  console.error("[G-Axis] Rename failed:", err.message);
+                }
+              }, 3000);
+            }
+          });
+        }
+
+      } catch (err) {
+        console.error("[G-Axis] Doc upload failed:", err);
+        try { chrome.tabs.create({ url: msg.data.download_url, active: true }); } catch (_) {}
+      }
+    })();
+  }
 
   // Visual feedback to content script
   if (msg.type === "perceiving") {
@@ -805,7 +917,7 @@ async function typeViaCDP(tabId, text) {
 // The old sendToActiveTab (queried active tab) is removed.
 
 let _lastCaptureTime = 0;
-const _MIN_CAPTURE_INTERVAL = 600; // ms — Chrome allows ~2/sec, stay safe
+const _MIN_CAPTURE_INTERVAL = 1100; // ms — Chrome enforces 1/sec limit strictly
 
 async function captureAndSendScreenshot() {
   // Throttle: Chrome enforces MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND

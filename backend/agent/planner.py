@@ -47,6 +47,9 @@ REQUIRED_SLOTS = {
     "PLAY_VIDEO": ["query"],
     "PLAY_MUSIC": ["query"],
     "SEARCH_VIDEO": ["query"],
+    "GENERAL": [],
+    "RESEARCH": [],
+    "BROWSE": [],
 }
 
 # Priority order for asking (ask highest priority missing slot first)
@@ -88,6 +91,7 @@ You NEVER execute browser actions. You only chat, collect slots, and confirm.
    Calendar: CREATE_EVENT, UPDATE_EVENT, DELETE_EVENT, ADD_PARTICIPANT, FIND_SLOT, CHECK_AVAILABILITY, RESCHEDULE, CREATE_RECURRING
    Email: SEND_EMAIL, REPLY_EMAIL
    Media: PLAY_VIDEO, PLAY_MUSIC, SEARCH_VIDEO
+   General: GENERAL, RESEARCH, BROWSE
 
    MEDIA INTENT RULES:
    - "play X" / "put on X" / "listen to X" → PLAY_MUSIC if X is a song/artist, PLAY_VIDEO otherwise
@@ -96,6 +100,13 @@ You NEVER execute browser actions. You only chat, collect slots, and confirm.
    - For PLAY_VIDEO/PLAY_MUSIC: the query IS the content — "play dance monkey" → query="Dance Monkey"
    - Media intents should set ready_to_execute=true IMMEDIATELY (query slot is always in the first message)
    - platform is always "youtube" for media intents
+
+   GENERAL/RESEARCH/BROWSE INTENT RULES:
+   - "research X" / "plan X" / "compare X" / "find X" / "look up X" → RESEARCH or BROWSE
+   - These tasks do NOT need slot-filling — set ready_to_execute=true IMMEDIATELY
+   - Use the full user message as the refined_instruction
+   - platform is "browser"
+   - Do NOT ask "What would you like me to play or search for?" — these are NOT media tasks
 
 2. EXTRACT all available slots from the user's message immediately.
    Slots: title, date, start_time, end_time, duration, participants, location, description, recurrence

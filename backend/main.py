@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 
 from backend.agent.core import GAxisAgent, TaskEvent
 from backend.agent.live_session import LiveSession
@@ -193,6 +193,7 @@ async def websocket_endpoint(ws: WebSocket):
                 if agent:
                     agent.tool_executor.receive_action_result(data.get("result", {}))
                     logger.info(f"Action result received: success={data.get('result', {}).get('success')}")
+
 
             elif msg_type == "ping":
                 queue.put_nowait(json.dumps({"type": "pong"}))
@@ -578,3 +579,16 @@ async def list_replays():
         return JSONResponse({"error": "Agent not initialized"}, status_code=503)
     replays = agent.replay.list_replays()
     return JSONResponse({"replays": replays})
+
+
+@app.get("/api/doc/{filename}")
+async def download_doc(filename: str):
+    """Download a generated .docx research document."""
+    filepath = os.path.join("research-docs", filename)
+    if not os.path.exists(filepath):
+        return JSONResponse({"error": "Document not found"}, status_code=404)
+    return FileResponse(
+        filepath,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=filename,
+    )
