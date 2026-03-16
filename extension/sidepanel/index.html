@@ -56,6 +56,10 @@
             Compare laptops
           </button>
         </div>
+        <button id="dashboard-btn" class="dashboard-btn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4v8H3zM10 8h4v12h-4zM17 4h4v16h-4z"/></svg>
+          My Progress
+        </button>
       </div>
 
       <!-- Conversation Chat (pre-execution planning) -->
@@ -63,19 +67,128 @@
         <div id="chat-messages"></div>
       </section>
 
+      <!-- Analytics Dashboard -->
+      <section id="dashboard-section" class="hidden">
+        <div class="dashboard">
+          <div class="dash-header">
+            <h3>Insights</h3>
+            <button id="dash-close-btn" class="dash-close">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+
+          <!-- Empty state (shown when no data) -->
+          <div id="dash-empty" class="dash-empty">
+            <div class="dash-empty-icon">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
+            </div>
+            <p class="dash-empty-title">No conversations yet</p>
+            <p class="dash-empty-sub">Start a voice chat to see your communication insights here</p>
+          </div>
+
+          <!-- Dashboard content (hidden when empty) -->
+          <div id="dash-content" class="hidden">
+            <!-- Level card -->
+            <div class="dash-level-card">
+              <div class="dash-level-info">
+                <div class="dash-level-badge" id="dash-level">1</div>
+                <div>
+                  <div class="dash-level-label">Level <span id="dash-level-num">1</span></div>
+                  <div class="dash-xp-text"><span id="dash-xp">0</span> XP</div>
+                </div>
+              </div>
+              <div class="dash-xp-bar"><div class="dash-xp-fill" id="dash-xp-fill"></div></div>
+              <div class="dash-xp-next">Next level: <span id="dash-xp-next">500</span> XP</div>
+            </div>
+
+            <!-- Stats grid -->
+            <div class="dash-stats-grid">
+              <div class="dash-stat-card">
+                <div class="dash-stat-icon streak">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L3 14h7l-2 8 10-12h-7l2-8z"/></svg>
+                </div>
+                <div class="dash-stat-value" id="dash-streak">0</div>
+                <div class="dash-stat-label">Day Streak</div>
+              </div>
+              <div class="dash-stat-card">
+                <div class="dash-stat-icon sessions">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+                </div>
+                <div class="dash-stat-value" id="dash-sessions">0</div>
+                <div class="dash-stat-label">Sessions</div>
+              </div>
+              <div class="dash-stat-card">
+                <div class="dash-stat-icon time">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+                </div>
+                <div class="dash-stat-value" id="dash-minutes">0</div>
+                <div class="dash-stat-label">Minutes</div>
+              </div>
+            </div>
+
+            <!-- Skills section -->
+            <div class="dash-card">
+              <div class="dash-card-header">
+                <h4>Communication Skills</h4>
+                <span class="dash-card-badge" id="dash-avg-skill">--</span>
+              </div>
+              <div class="skill-bar"><span class="skill-name">Confidence</span><div class="skill-track"><div class="skill-fill confidence" id="skill-confidence"></div></div><span class="skill-val" id="skill-confidence-val">--</span></div>
+              <div class="skill-bar"><span class="skill-name">Clarity</span><div class="skill-track"><div class="skill-fill clarity" id="skill-clarity"></div></div><span class="skill-val" id="skill-clarity-val">--</span></div>
+              <div class="skill-bar"><span class="skill-name">Engagement</span><div class="skill-track"><div class="skill-fill engagement" id="skill-engagement"></div></div><span class="skill-val" id="skill-engagement-val">--</span></div>
+              <div class="skill-bar"><span class="skill-name">Listening</span><div class="skill-track"><div class="skill-fill listening" id="skill-listening"></div></div><span class="skill-val" id="skill-listening-val">--</span></div>
+              <div class="skill-bar"><span class="skill-name">Pacing</span><div class="skill-track"><div class="skill-fill pacing" id="skill-pacing"></div></div><span class="skill-val" id="skill-pacing-val">--</span></div>
+            </div>
+
+            <!-- Weekly activity -->
+            <div class="dash-card">
+              <h4>This Week</h4>
+              <div class="activity-week" id="dash-activity-week"></div>
+            </div>
+
+            <!-- Recent conversations -->
+            <div class="dash-card">
+              <h4>Recent</h4>
+              <div id="dash-recent-list"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- Voice Listening UI -->
       <section id="voice-section" class="hidden">
+        <!-- Persona selector -->
+        <div class="persona-bar">
+          <select id="persona-select" class="persona-select">
+            <optgroup label="Companions">
+              <option value="friend">Friendly Buddy</option>
+              <option value="mentor">Wise Mentor</option>
+              <option value="creative">Creative Partner</option>
+              <option value="chill">Chill Companion</option>
+            </optgroup>
+            <optgroup label="Scenarios">
+              <option value="professional">Professional Coach</option>
+              <option value="interviewer">Job Interviewer</option>
+              <option value="debater">Friendly Debater</option>
+              <option value="storyteller">Storyteller</option>
+            </optgroup>
+          </select>
+        </div>
         <div class="voice-container">
-          <!-- Animated orb -->
+          <!-- Animated orb character -->
           <div id="voice-orb" class="voice-orb idle">
             <div class="voice-orb-ring ring-1"></div>
             <div class="voice-orb-ring ring-2"></div>
             <div class="voice-orb-ring ring-3"></div>
+            <div class="voice-orb-glow"></div>
             <div class="voice-orb-core">
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-                <path d="M19 10v2a7 7 0 0 1-14 0v-2" fill="none" stroke="currentColor" stroke-width="2"/>
-              </svg>
+              <!-- Face -->
+              <div class="orb-face">
+                <div class="orb-eyes">
+                  <div class="orb-eye left"><div class="orb-pupil"></div></div>
+                  <div class="orb-eye right"><div class="orb-pupil"></div></div>
+                </div>
+                <div class="orb-mouth"></div>
+              </div>
             </div>
           </div>
           <div id="voice-status-text" class="voice-status-text">Tap to start listening</div>
@@ -83,11 +196,29 @@
         </div>
         <!-- Conversation transcript -->
         <div id="voice-transcript" class="voice-transcript"></div>
-        <!-- End session button -->
+        <!-- Live indicator -->
+        <div id="voice-live-badge" class="voice-live-badge">
+          <span class="live-dot"></span> LIVE
+        </div>
+        <!-- Stream controls -->
         <div class="voice-actions">
-          <button id="voice-end-btn" class="voice-end-btn">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
-            End conversation
+          <!-- Stream play/pause -->
+          <button id="voice-stream-btn" class="voice-control-btn stream-on" title="Pause stream">
+            <svg id="stream-pause-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+            <svg id="stream-play-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="display:none"><polygon points="5,3 19,12 5,21"/></svg>
+          </button>
+          <!-- Mic mute/unmute -->
+          <button id="voice-mic-btn" class="voice-control-btn mic-on" title="Mute mic">
+            <svg id="mic-icon-on" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+            <svg id="mic-icon-off" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zM14.98 11.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3L3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-4.86H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z"/></svg>
+          </button>
+          <!-- Refresh — new conversation -->
+          <button id="voice-new-btn" class="voice-control-btn new-chat" title="New conversation">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+          </button>
+          <!-- End stream -->
+          <button id="voice-end-btn" class="voice-end-btn" title="End stream">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
           </button>
         </div>
       </section>

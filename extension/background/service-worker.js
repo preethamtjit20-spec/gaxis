@@ -11,10 +11,12 @@
 // Docs are created server-side as .docx files (no OAuth needed)
 
 import { MSG, DEFAULT_SETTINGS } from "../shared/types.js";
+import { GeminiLiveClient, PERSONAS } from "./gemini-live.js";
 
 let ws = null;
 let wsReconnectTimer = null;
 let settings = { ...DEFAULT_SETTINGS };
+let geminiLive = null;
 let isConnected = false;
 let latestDomSnapshot = [];
 
@@ -28,6 +30,116 @@ let latestDomSnapshot = [];
 // This sandbox isolates agent tabs from user tabs.
 let agentTabId = null;
 let originalTabId = null;       // The tab where G-Axis was first opened
+
+// ─── OFFSCREEN MIC CAPTURE ──────────────────────────────────
+let offscreenCreated = false;
+
+async function ensureOffscreen() {
+  if (offscreenCreated) return;
+  try {
+    await chrome.offscreen.createDocument({
+      url: "offscreen/offscreen.html",
+      reasons: ["USER_MEDIA"],
+      justification: "Microphone capture for Gemini Live voice session",
+    });
+    offscreenCreated = true;
+  } catch (e) {
+    // Already exists
+    if (e.message?.includes("single offscreen")) offscreenCreated = true;
+    else console.error("[G-Axis] Offscreen create error:", e);
+  }
+}
+
+// Offscreen doc connects via port for high-frequency audio streaming.
+// Control messages (start/stop) use chrome.runtime.sendMessage.
+
+let offscreenPort = null;
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === "offscreen-mic") {
+    console.log("[G-Axis] Offscreen mic port connected");
+    offscreenPort = port;
+    port.onMessage.addListener((msg) => {
+      if (msg.type === "audio_chunk" && msg.data) {
+        // Send directly to Gemini Live (client-side) or fallback to backend
+        if (geminiLive?.isActive) {
+          geminiLive.sendAudio(msg.data);
+        } else {
+          sendToBackend({ type: "live_audio_in", data: msg.data });
+        }
+      }
+    });
+    port.onDisconnect.addListener(() => {
+      console.log("[G-Axis] Offscreen mic port disconnected");
+      offscreenPort = null;
+    });
+  }
+});
+
+let micWindowId = null;
+let micTabId = null;
+
+async function startOffscreenMic() {
+  // Already streaming via port
+  if (offscreenPort) {
+    console.log("[G-Axis] Mic already streaming");
+    return;
+  }
+
+  // Check if mic window already open
+  if (micWindowId) {
+    try {
+      await chrome.windows.get(micWindowId);
+      // Window exists — tell it to restart streaming if port is alive
+      if (offscreenPort) {
+        offscreenPort.postMessage({ type: "start_mic" });
+        console.log("[G-Axis] Restarted mic in existing window");
+      } else {
+        // Port dead but window alive — reload the page to reconnect
+        if (micTabId) {
+          chrome.tabs.reload(micTabId).catch(() => {});
+          console.log("[G-Axis] Reloading mic tab to reconnect");
+        }
+      }
+      return;
+    } catch {
+      micWindowId = null;
+      micTabId = null;
+    }
+  }
+
+  // Open mic.html — it auto-requests permission and starts streaming
+  const win = await chrome.windows.create({
+    url: chrome.runtime.getURL("permissions/mic.html"),
+    type: "popup",
+    width: 250,
+    height: 80,
+    top: 10,
+    left: 10,
+    focused: true,
+  });
+  micWindowId = win.id;
+  micTabId = win.tabs?.[0]?.id || null;
+  console.log("[G-Axis] Mic window opened:", micWindowId);
+}
+
+function stopOffscreenMic() {
+  if (offscreenPort) {
+    offscreenPort.postMessage({ type: "stop_mic" });
+  }
+}
+
+chrome.windows.onRemoved.addListener((windowId) => {
+  if (windowId === micWindowId) {
+    micWindowId = null;
+    micTabId = null;
+    offscreenPort = null;
+  }
+});
+
+function closeMicTab() {
+  stopOffscreenMic();
+}
 let workspaceGroupId = null;    // Chrome tab group ID
 const workspaceTabs = new Set(); // All tab IDs managed by G-Axis
 
@@ -70,8 +182,8 @@ async function ensureWorkspaceGroup() {
     }
   }
 
-  // Create group from existing workspace tabs
-  const tabIds = [...workspaceTabs].filter(id => id != null);
+  // Create group from existing workspace tabs (exclude mic popup tab)
+  const tabIds = [...workspaceTabs].filter(id => id != null && id !== micTabId);
   if (tabIds.length === 0) return null;
 
   try {
@@ -90,6 +202,16 @@ async function ensureWorkspaceGroup() {
 
 /** Open a new tab inside the workspace sandbox. */
 async function openWorkspaceTab(url) {
+  // Only create workspace tabs in normal windows (not popups)
+  const currentWindow = await chrome.windows.getCurrent();
+  if (currentWindow.type !== "normal") {
+    // Find a normal window to use
+    const normalWindows = await chrome.windows.getAll({ windowTypes: ["normal"] });
+    if (normalWindows.length > 0) {
+      await chrome.windows.update(normalWindows[0].id, { focused: true });
+    }
+  }
+
   await ensureWorkspaceGroup();
 
   const newTab = await chrome.tabs.create({ url, active: true });
@@ -756,26 +878,65 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: true });
       break;
 
-    // ── Live Audio passthrough ──
-    case MSG.LIVE_START:
-      sendToBackend({ type: "live_start" });
+    case "gaxis:open_mic_permission":
+      chrome.tabs.create({ url: chrome.runtime.getURL("permissions/mic.html") });
       sendResponse({ ok: true });
       break;
 
+    // ── Live Audio passthrough ──
+    case MSG.LIVE_START: {
+      // Direct Gemini Live connection — no backend hop
+      if (geminiLive?.isActive) {
+        sendResponse({ ok: true });
+        break;
+      }
+      const persona = message.persona || "friend";
+      geminiLive = new GeminiLiveClient(persona, {
+        onAudioOut: (b64) => safeBroadcast({ type: MSG.LIVE_AUDIO_OUT, data: b64 }),
+        onTranscriptIn: (text) => safeBroadcast({ type: MSG.LIVE_TRANSCRIPT_IN, data: { text } }),
+        onTranscriptOut: (text) => safeBroadcast({ type: MSG.LIVE_TRANSCRIPT_OUT, data: { text } }),
+        onStatus: (status, data) => safeBroadcast({ type: MSG.LIVE_STATUS, data: { status, ...data } }),
+      });
+      geminiLive.start();
+      startOffscreenMic();
+      sendResponse({ ok: true });
+      break;
+    }
+
     case MSG.LIVE_STOP:
-      sendToBackend({ type: "live_stop" });
+      if (geminiLive) {
+        geminiLive.stop();
+        geminiLive = null;
+      }
+      stopOffscreenMic();
       sendResponse({ ok: true });
       break;
 
     case MSG.LIVE_AUDIO_IN:
-      // High-frequency — send raw audio chunk to backend, no logging
-      sendToBackend({ type: "live_audio_in", data: message.data });
-      // No sendResponse — fire and forget for performance
+      if (geminiLive?.isActive) geminiLive.sendAudio(message.data);
+      break;
+
+    case "offscreen:audio_chunk":
+      if (geminiLive?.isActive) geminiLive.sendAudio(message.data);
+      break;
+
+    case "gaxis:restart_mic":
+      startOffscreenMic();
+      sendResponse({ ok: true });
+      break;
+
+    case "gaxis:restart_mic_stop":
+      if (offscreenPort) offscreenPort.postMessage({ type: "stop_mic" });
+      sendResponse({ ok: true });
       break;
 
     case MSG.LIVE_TEXT:
-      sendToBackend({ type: "live_text", text: message.text || "" });
+      if (geminiLive?.isActive) geminiLive.sendText(message.text || "");
       sendResponse({ ok: true });
+      break;
+
+    case "gaxis:get_personas":
+      sendResponse({ personas: Object.entries(PERSONAS).map(([id, p]) => ({ id, name: p.name })) });
       break;
 
     case "gaxis:type_cdp": {

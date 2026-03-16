@@ -26,37 +26,20 @@ from backend.policy.engine import PolicyEngine
 
 logger = logging.getLogger("gaxis.live")
 
-LIVE_MODEL = "gemini-live-2.5-flash-native-audio"
+LIVE_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 
-LIVE_SYSTEM = """You are G-Axis — a warm, capable AI browser assistant having a real-time voice conversation with the user.
+LIVE_SYSTEM = """You are G-Axis — a smart, friendly voice assistant. Think of yourself as a knowledgeable friend the user is having a real conversation with.
 
-You can SEE the user's browser through screenshots and CONTROL it through tools (click, type, navigate, scroll, etc.).
+You can search the web with Google to get real-time, up-to-date information on anything — news, weather, sports, stocks, events, people, etc. Use Google Search whenever the user asks about something current or factual that benefits from fresh data.
 
-VOICE STYLE:
-- Speak naturally, like a helpful friend sitting next to them
-- Keep sentences SHORT (5-15 words). Voice is not text — brevity wins
-- Narrate actions concisely: "Opening Calendar..." "Setting the date to March 15th..." "Done! Your event is created."
-- Acknowledge the user immediately: "Got it!" "Sure thing!" "On it!"
-- When waiting for a page to load, say so: "Just a moment while this loads..."
-- Express warmth through intonation, not verbose language
-
-TOOL USE:
-- You have browser control tools. Use them when the user asks you to do something on the web.
-- CRITICAL: After EVERY tool call, you MUST speak aloud to narrate the outcome. NEVER chain multiple tool calls silently. Always say something between actions like "Done!" or "Now setting the time..." or "Opening Calendar...".
-- If you need to see what's on screen, ask for a screenshot (one will be provided automatically).
-- When performing multi-step tasks, give brief voice progress updates between EACH action. The user needs to hear you working.
-- Do NOT make more than 2 consecutive tool calls without speaking. The user cannot see what you're doing — they can only HEAR you.
-
-CONVERSATION:
-- You can chat about anything, not just browser tasks
-- If the user asks a question, answer it conversationally
-- If the user says "stop" or "wait", pause immediately
-- You can ask clarifying questions before acting
-
-IMPORTANT:
-- NEVER read out URLs, HTML, or technical details unless asked
-- NEVER give long lists — summarize or ask what they want to hear
-- If something fails, say so simply and suggest what to try next
+CONVERSATION STYLE:
+- Natural, warm, human. Not robotic. Not formal.
+- Remember everything discussed in this session. Reference earlier topics naturally.
+- React genuinely — "Oh interesting!", "Yeah totally", "Hmm let me look that up"
+- Keep responses conversational — a few sentences, then pause for the user.
+- If interrupted, stop and listen immediately.
+- Always finish your sentences. Never trail off.
+- No URLs, no code, no disclaimers. Just talk like a person.
 """
 
 
@@ -90,6 +73,7 @@ class LiveSession:
         self._session = None
         self._receive_task: asyncio.Task | None = None
         self._running = False
+        self._reconnecting = False
         self._cached_task_values: dict | None = None
         self._current_url: str = ""
         # ── In-session state tracking ──
@@ -99,24 +83,20 @@ class LiveSession:
         self._completed_goals: list[str] = []    # high-level things accomplished
         self._step_count: int = 0
 
-    async def start(self) -> None:
-        """Open a Gemini Live session with audio + tool calling."""
-        logger.info("Starting Gemini Live session...")
-        self._session_start = time.time()
-        self._action_log = []
-        self._failed_actions = []
-        self._completed_goals = []
-        self._step_count = 0
-
-        # Build tool declarations for Live API
-        tool_declarations = [types.Tool(function_declarations=ALL_TOOLS)]
-
-        config = types.LiveConnectConfig(
+    def _build_config(self) -> types.LiveConnectConfig:
+        """Build the LiveConnectConfig — shared between start and reconnect."""
+        # Only use google_search (native Gemini tool).
+        # Browser tools (click, type, navigate) cause 1008 errors with native audio model.
+        # Browser actions are handled separately via the text-based task pipeline.
+        tool_declarations = [
+            types.Tool(google_search=types.GoogleSearch()),
+        ]
+        return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name="Aoede",
+                        voice_name="Puck",  # Expressive, natural voice
                     )
                 )
             ),
@@ -126,12 +106,29 @@ class LiveSession:
             tools=tool_declarations,
             input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
+            context_window_compression=types.ContextWindowCompressionConfig(
+                trigger_tokens=104857,
+                sliding_window=types.SlidingWindow(target_tokens=52428),
+            ),
         )
 
-        self._session = await self._client.aio.live.connect(
+    async def start(self) -> None:
+        """Open a Gemini Live session with audio + tool calling."""
+        logger.info("Starting Gemini Live session...")
+        self._session_start = time.time()
+        self._action_log = []
+        self._failed_actions = []
+        self._completed_goals = []
+        self._step_count = 0
+        self._reconnecting = False
+
+        config = self._build_config()
+
+        self._session_ctx = self._client.aio.live.connect(
             model=LIVE_MODEL,
             config=config,
         )
+        self._session = await self._session_ctx.__aenter__()
         self._running = True
         self._receive_task = asyncio.create_task(self._receive_loop())
 
@@ -140,8 +137,8 @@ class LiveSession:
 
     async def send_audio(self, pcm_base64: str) -> None:
         """Send a chunk of user audio (PCM 16kHz) to Gemini."""
-        if not self._session or not self._running:
-            return
+        if not self._session or not self._running or self._reconnecting:
+            return  # Silently drop audio during reconnect
         try:
             raw_bytes = base64.b64decode(pcm_base64)
             await self._session.send_realtime_input(
@@ -150,12 +147,12 @@ class LiveSession:
                     mime_type="audio/pcm;rate=16000",
                 )
             )
-        except Exception as e:
-            logger.error(f"Failed to send audio: {e}")
+        except Exception:
+            pass  # Connection closing — receive loop handles reconnect
 
     async def send_screenshot(self, screenshot_b64: str) -> None:
         """Send a screenshot to the Live session as visual context."""
-        if not self._session or not self._running:
+        if not self._session or not self._running or self._reconnecting:
             return
         try:
             raw_bytes = base64.b64decode(screenshot_b64)
@@ -203,46 +200,116 @@ class LiveSession:
         except Exception as e:
             logger.error(f"Failed to send text: {e}")
 
-    async def _receive_loop(self) -> None:
-        """Process all responses from Gemini Live — audio, transcripts, tool calls."""
+    async def _reconnect_session(self) -> None:
+        """Close old session and open a fresh one."""
         try:
-            async for response in self._session.receive():
+            if hasattr(self, '_session_ctx') and self._session_ctx:
+                await self._session_ctx.__aexit__(None, None, None)
+        except Exception:
+            pass
+        await asyncio.sleep(0.5)
+        self._session_ctx = self._client.aio.live.connect(
+            model=LIVE_MODEL,
+            config=self._build_config(),
+        )
+        self._session = await self._session_ctx.__aenter__()
+
+    async def _receive_loop(self) -> None:
+        """Process all responses from Gemini Live — audio, transcripts, tool calls.
+
+        The receive() async generator runs for the full session lifetime.
+        Auto-reconnects on session timeout (~15 min) or transient errors.
+        """
+        max_reconnects = 20  # Support very long conversations
+        reconnect_count = 0
+
+        while self._running and reconnect_count <= max_reconnects:
+            try:
+                async for response in self._session.receive():
+                    if not self._running:
+                        return
+
+                    # Audio output from model
+                    if response.server_content and response.server_content.model_turn:
+                        for part in response.server_content.model_turn.parts:
+                            if part.inline_data and part.inline_data.data:
+                                audio_b64 = base64.b64encode(part.inline_data.data).decode()
+                                await self._audio_out_fn(audio_b64)
+
+                    # Input transcription
+                    if response.server_content and response.server_content.input_transcription:
+                        text = response.server_content.input_transcription.text
+                        if text:
+                            await self._transcript_fn("in", text)
+                            logger.info(f"User said: {text[:80]}")
+
+                    # Output transcription
+                    if response.server_content and response.server_content.output_transcription:
+                        text = response.server_content.output_transcription.text
+                        if text:
+                            await self._transcript_fn("out", text)
+                            logger.info(f"Agent said: {text[:80]}")
+
+                    # Turn complete
+                    if response.server_content and response.server_content.turn_complete:
+                        logger.debug("Turn complete — listening for next input")
+
+                    # Tool calls
+                    if response.tool_call:
+                        await self._handle_tool_calls(response.tool_call.function_calls)
+
+                # receive() ended — session timeout or server close
                 if not self._running:
                     break
 
-                # Audio output from model
-                if response.server_content and response.server_content.model_turn:
-                    for part in response.server_content.model_turn.parts:
-                        if part.inline_data and part.inline_data.data:
-                            audio_b64 = base64.b64encode(part.inline_data.data).decode()
-                            await self._audio_out_fn(audio_b64)
+                self._reconnecting = True
+                reconnect_count += 1
+                elapsed = int(time.time() - self._session_start)
+                logger.info(f"Session expired after {elapsed}s — reconnecting ({reconnect_count}/{max_reconnects})")
+                await self._status_fn("reconnecting", {"message": "Extending session..."})
+                try:
+                    await self._reconnect_session()
+                    self._reconnecting = False
+                    logger.info(f"Session auto-reconnected (#{reconnect_count})")
+                    await self._status_fn("connected", {"model": LIVE_MODEL})
+                    continue
+                except Exception as re:
+                    logger.error(f"Reconnection failed: {re}")
+                    self._reconnecting = False
+                    await self._status_fn("error", {"message": "Session expired. Click New to restart."})
+                    break
 
-                # Input transcription (what the user said)
-                if response.server_content and response.server_content.input_transcription:
-                    text = response.server_content.input_transcription.text
-                    if text:
-                        await self._transcript_fn("in", text)
-                        logger.info(f"User said: {text[:80]}")
+            except asyncio.CancelledError:
+                logger.info("Live receive loop cancelled")
+                return
+            except Exception as e:
+                err_str = str(e)
+                is_transient = any(k in err_str.lower() for k in ("1008", "1011", "unavailable", "policy"))
+                if self._running and is_transient and reconnect_count < max_reconnects:
+                    self._reconnecting = True
+                    reconnect_count += 1
+                    logger.warning(f"Transient error — reconnecting ({reconnect_count}/{max_reconnects}): {e}")
+                    await self._status_fn("reconnecting", {"message": "Reconnecting..."})
+                    await asyncio.sleep(2)
+                    try:
+                        await self._reconnect_session()
+                        self._reconnecting = False
+                        logger.info(f"Reconnected after error (#{reconnect_count})")
+                        await self._status_fn("connected", {"model": LIVE_MODEL})
+                        continue
+                    except Exception as re:
+                        logger.error(f"Reconnection failed: {re}")
+                        self._reconnecting = False
+                        await self._status_fn("error", {"message": str(re)})
+                        break
+                else:
+                    logger.error(f"Live receive loop error: {e}", exc_info=True)
+                    await self._status_fn("error", {"message": str(e)})
+                    break
 
-                # Output transcription (what the model said)
-                if response.server_content and response.server_content.output_transcription:
-                    text = response.server_content.output_transcription.text
-                    if text:
-                        await self._transcript_fn("out", text)
-                        logger.info(f"Agent said: {text[:80]}")
-
-                # Tool calls — Gemini wants to perform browser actions
-                if response.tool_call:
-                    await self._handle_tool_calls(response.tool_call.function_calls)
-
-        except asyncio.CancelledError:
-            logger.info("Live receive loop cancelled")
-        except Exception as e:
-            logger.error(f"Live receive loop error: {e}", exc_info=True)
-            await self._status_fn("error", {"message": str(e)})
-        finally:
-            self._running = False
-            await self._status_fn("disconnected", {})
+        self._running = False
+        self._reconnecting = False
+        await self._status_fn("disconnected", {})
 
     async def _try_deterministic(self, instruction: str) -> str | None:
         """Try to execute via deterministic connector skill (calendar, gmail, youtube).
@@ -583,10 +650,14 @@ class LiveSession:
                 pass
         if self._session:
             try:
-                self._session.close()
+                if hasattr(self, '_session_ctx') and self._session_ctx:
+                    await self._session_ctx.__aexit__(None, None, None)
+                else:
+                    self._session.close()
             except Exception as e:
                 logger.debug(f"Live session close error: {e}")
             self._session = None
+            self._session_ctx = None
 
         if self._action_log:
             success = sum(1 for a in self._action_log if a["success"])

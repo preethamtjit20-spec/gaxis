@@ -36,6 +36,8 @@ paused_instruction: str = ""  # Remember what we were doing
 
 # Lock to prevent concurrent task execution from racing on globals
 _task_lock = asyncio.Lock()
+_live_lock = asyncio.Lock()
+_live_starting = False
 
 # Gemini Live Audio session (one per server — single-user for now)
 live_session: LiveSession | None = None
@@ -91,7 +93,7 @@ async def broadcast_event(event: TaskEvent) -> None:
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
-    global live_session
+    global live_session, _live_starting
     await ws.accept()
     queue: asyncio.Queue = asyncio.Queue()
     client_queues[ws] = queue
@@ -116,6 +118,10 @@ async def websocket_endpoint(ws: WebSocket):
             message = await ws.receive_text()
             data = json.loads(message)
             msg_type = data.get("type", "")
+
+            # Log non-audio/non-spam message types
+            if msg_type not in ("live_audio_in", "ping", "dom_changed"):
+                logger.info(f"WS message: {msg_type}")
 
             if msg_type == "plan_chat":
                 # Conversation planner — chat before execution
@@ -285,47 +291,53 @@ async def websocket_endpoint(ws: WebSocket):
             # ─── GEMINI LIVE AUDIO ──────────────────────────────
 
             elif msg_type == "live_start":
-                logger.info("Starting Gemini Live Audio session")
-                if live_session and live_session.is_active:
-                    await live_session.stop()
+                async with _live_lock:
+                    if _live_starting:
+                        logger.warning("Live start already in progress, ignoring")
+                        continue
+                    logger.info("Starting Gemini Live Audio session")
+                    if live_session and live_session.is_active:
+                        await live_session.stop()
+                        live_session = None
 
-                async def _live_audio_out(b64):
-                    queue.put_nowait(json.dumps({"type": "live_audio_out", "data": b64}))
+                    async def _live_audio_out(b64):
+                        queue.put_nowait(json.dumps({"type": "live_audio_out", "data": b64}))
 
-                async def _live_transcript(direction, text):
-                    queue.put_nowait(json.dumps({"type": f"live_transcript_{direction}", "data": {"text": text}}))
+                    async def _live_transcript(direction, text):
+                        queue.put_nowait(json.dumps({"type": f"live_transcript_{direction}", "data": {"text": text}}))
 
-                async def _live_status(status, d):
-                    queue.put_nowait(json.dumps({"type": "live_status", "data": {"status": status, **d}}))
+                    async def _live_status(status, d):
+                        queue.put_nowait(json.dumps({"type": "live_status", "data": {"status": status, **d}}))
 
-                live_session = LiveSession(
-                    genai_client=agent.genai_client,
-                    tool_executor=agent.tool_executor,
-                    emit_fn=agent._emit,
-                    audio_out_fn=_live_audio_out,
-                    transcript_fn=_live_transcript,
-                    status_fn=_live_status,
-                    get_screenshot_fn=agent._get_screenshot_from_extension,
-                    policy_engine=agent.policy,
-                    ui_graph_registry=agent.ui_graph_registry,
-                )
-                # Wire connector registry for deterministic skill execution
-                live_session._connector_registry = agent.connectors
+                    live_session = LiveSession(
+                        genai_client=agent.genai_client,
+                        tool_executor=agent.tool_executor,
+                        emit_fn=agent._emit,
+                        audio_out_fn=_live_audio_out,
+                        transcript_fn=_live_transcript,
+                        status_fn=_live_status,
+                        get_screenshot_fn=agent._get_screenshot_from_extension,
+                        policy_engine=agent.policy,
+                        ui_graph_registry=agent.ui_graph_registry,
+                    )
+                    live_session._connector_registry = agent.connectors
 
-                try:
-                    await live_session.start()
-                    # Send initial screenshot + track URL for UI graph detection
-                    if agent._ext_screenshot:
-                        await live_session.send_screenshot(agent._ext_screenshot)
-                    if agent._ext_url:
-                        live_session._current_url = agent._ext_url
-                except Exception as e:
-                    logger.error(f"Failed to start Live session: {e}")
-                    queue.put_nowait(json.dumps({
-                        "type": "live_status",
-                        "data": {"status": "error", "message": str(e)},
-                    }))
-                    live_session = None
+                    _live_starting = True
+                    try:
+                        await live_session.start()
+                        if agent._ext_screenshot:
+                            await live_session.send_screenshot(agent._ext_screenshot)
+                        if agent._ext_url:
+                            live_session._current_url = agent._ext_url
+                    except Exception as e:
+                        logger.error(f"Failed to start Live session: {e}")
+                        queue.put_nowait(json.dumps({
+                            "type": "live_status",
+                            "data": {"status": "error", "message": str(e)},
+                        }))
+                        live_session = None
+                    finally:
+                        _live_starting = False
 
             elif msg_type == "live_audio_in":
                 if live_session and live_session.is_active:
@@ -336,10 +348,11 @@ async def websocket_endpoint(ws: WebSocket):
                     await live_session.send_text(data.get("text", ""))
 
             elif msg_type == "live_stop":
-                logger.info("Stopping Gemini Live Audio session")
-                if live_session:
-                    await live_session.stop()
-                    live_session = None
+                async with _live_lock:
+                    logger.info("Stopping Gemini Live Audio session")
+                    if live_session:
+                        await live_session.stop()
+                        live_session = None
 
             else:
                 queue.put_nowait(json.dumps({
@@ -595,6 +608,44 @@ async def download_doc(filename: str):
     )
 
 
+class TranscriptClassifyRequest(BaseModel):
+    transcript: str
+
+
+@app.post("/api/classify-transcript")
+async def classify_transcript(req: TranscriptClassifyRequest):
+    """Classify a voice transcript: intent, summary, action items, key decisions, topics."""
+    if not agent:
+        return JSONResponse({"error": "Agent not initialized"}, status_code=503)
+    try:
+        from google.genai import types
+        response = await agent.genai_client.aio.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=(
+                "Analyze this voice conversation transcript and return a JSON object with:\n"
+                "- intent: one of 'task' (user asked agent to do something), 'research' (information gathering), "
+                "'planning' (scheduling/organizing), 'important' (key decisions or sensitive info), "
+                "'casual' (small talk, greetings only), 'unintentional' (accidental recording, test mic)\n"
+                "- summary: 2-3 sentence summary of the conversation\n"
+                "- action_items: list of follow-up actions mentioned (empty array if none)\n"
+                "- key_decisions: list of decisions made (empty array if none)\n"
+                "- topics: list of main topics discussed\n\n"
+                f"Transcript:\n{req.transcript}\n\nJSON:"
+            ),
+            config=types.GenerateContentConfig(
+                temperature=0.0,
+                max_output_tokens=512,
+                response_mime_type="application/json",
+            ),
+        )
+        import json as json_mod
+        result = json_mod.loads(response.text)
+        return JSONResponse(result)
+    except Exception as e:
+        logger.error(f"Transcript classification failed: {e}")
+        return JSONResponse({"intent": "important", "summary": "Classification failed", "action_items": [], "key_decisions": [], "topics": []})
+
+
 class TranscriptRequest(BaseModel):
     title: str
     content: str
@@ -611,3 +662,141 @@ async def save_transcript(req: TranscriptRequest):
         return JSONResponse({"success": True, "download_url": download_url, "filename": filename})
     except Exception as e:
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+# ─── CONVERSATION ANALYTICS ──────────────────────────────
+
+
+class AnalyzeSessionRequest(BaseModel):
+    session_id: str = ""
+    persona: str = "friend"
+    started_at: str = ""
+    ended_at: str = ""
+    duration_secs: int = 0
+    transcript: str = ""
+
+
+@app.post("/api/analyze-session")
+async def analyze_session(req: AnalyzeSessionRequest):
+    """Analyze a completed voice session — skills, insights, XP."""
+    if not agent:
+        return JSONResponse({"error": "Agent not initialized"}, status_code=503)
+
+    from backend.analytics.store import save_session, SessionRecord
+
+    # Count messages
+    lines = [l.strip() for l in req.transcript.split("\n") if l.strip()]
+    user_lines = [l for l in lines if l.startswith("**You**")]
+    agent_lines = [l for l in lines if l.startswith("**G-Axis**")]
+    user_words = sum(len(l.split()) for l in user_lines)
+    agent_words = sum(len(l.split()) for l in agent_lines)
+
+    # Skip trivial sessions
+    if len(user_lines) < 2:
+        return JSONResponse({"skipped": True, "reason": "Too short"})
+
+    # Analyze with Gemini
+    skills = {"confidence": 50, "clarity": 50, "engagement": 50, "listening": 50, "pacing": 50}
+    topics = []
+    summary = ""
+    intent = "casual"
+    action_items = []
+
+    try:
+        from google.genai import types
+        import re as _re
+
+        # Truncate transcript to avoid token limits
+        transcript_text = req.transcript[:3000]
+
+        response = await agent.genai_client.aio.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=(
+                'You are a conversation analyst. Analyze this voice conversation transcript.\n\n'
+                f'Transcript:\n"""\n{transcript_text}\n"""\n\n'
+                'Return a JSON object with exactly these fields:\n'
+                '{"intent":"casual","summary":"Brief summary here","topics":["topic1"],'
+                '"action_items":[],"skills":{"confidence":65,"clarity":70,"engagement":60,"listening":55,"pacing":50},'
+                '"recommendation":"One tip here"}\n\n'
+                'Rules:\n'
+                '- intent: one of task, research, planning, important, casual\n'
+                '- skills: scores 0-100 based on how the USER communicated\n'
+                '- summary: 1-2 sentences\n'
+                '- Return ONLY valid JSON, no markdown, no explanation'
+            ),
+            config=types.GenerateContentConfig(
+                temperature=0.0, max_output_tokens=1024,
+                response_mime_type="application/json",
+            ),
+        )
+
+        # Robust JSON extraction
+        raw = response.text.strip()
+        # Strip markdown code fences if present
+        if raw.startswith("```"):
+            raw = _re.sub(r'^```\w*\n?', '', raw)
+            raw = _re.sub(r'\n?```$', '', raw)
+            raw = raw.strip()
+        result = json.loads(raw)
+
+        skills = result.get("skills", skills)
+        topics = result.get("topics", [])
+        summary = result.get("summary", "")
+        intent = result.get("intent", "casual")
+        action_items = result.get("action_items", [])
+        recommendation = result.get("recommendation", "")
+        logger.info(f"Session analyzed: intent={intent}, skills={skills}")
+    except Exception as e:
+        logger.error(f"Session analysis failed: {e}")
+        recommendation = ""
+
+    # Save to analytics store
+    record = SessionRecord(
+        session_id=req.session_id or f"session_{int(time.time())}",
+        persona=req.persona,
+        started_at=req.started_at or datetime.now().isoformat(),
+        ended_at=req.ended_at or datetime.now().isoformat(),
+        duration_secs=req.duration_secs,
+        message_count=len(user_lines) + len(agent_lines),
+        user_word_count=user_words,
+        agent_word_count=agent_words,
+        topics=topics,
+        intent=intent,
+        summary=summary,
+        skills=skills,
+        action_items=action_items,
+    )
+
+    from datetime import datetime as dt
+    xp_result = save_session(record)
+
+    return JSONResponse({
+        "session_id": record.session_id,
+        "summary": summary,
+        "intent": intent,
+        "topics": topics,
+        "skills": skills,
+        "action_items": action_items,
+        "recommendation": recommendation,
+        "xp_earned": xp_result["xp_earned"],
+        "level": xp_result["level"],
+        "streak": xp_result["streak"],
+    })
+
+
+@app.get("/api/dashboard")
+async def get_dashboard():
+    """Get dashboard stats for the sidepanel."""
+    from backend.analytics.store import get_stats, get_insights, get_recent_sessions
+    stats = get_stats()
+    insights = get_insights()
+    recent = get_recent_sessions(5)
+    return JSONResponse({
+        "stats": stats,
+        "insights": insights,
+        "recent_sessions": recent,
+    })
+
+
+import time as _time
+from datetime import datetime

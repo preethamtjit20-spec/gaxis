@@ -192,7 +192,7 @@ let lastBlockerCheck = 0;
  */
 function checkForBlocker(addedNode) {
   if (!addedNode || !addedNode.nodeType || addedNode.nodeType !== 1) return;
-  if (addedNode.id?.startsWith("gaxis-")) return;
+  if (typeof addedNode.id === "string" && addedNode.id.startsWith("gaxis-")) return;
 
   // Throttle: don't fire more than once per second
   const now = Date.now();

@@ -15,7 +15,8 @@
     "alarms",
     "tabGroups",
     "debugger",
-    "identity"
+    "identity",
+    "offscreen"
   ],
   "host_permissions": ["<all_urls>"],
   "oauth2": {

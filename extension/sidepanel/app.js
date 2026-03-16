@@ -125,6 +125,18 @@ const els = {
   voiceTranscriptLive: $("voice-transcript-live"),
   voiceTranscript: $("voice-transcript"),
   voiceEndBtn: $("voice-end-btn"),
+  personaSelect: $("persona-select"),
+  dashboardSection: $("dashboard-section"),
+  dashboardBtn: $("dashboard-btn"),
+  dashCloseBtn: $("dash-close-btn"),
+  voiceStreamBtn: $("voice-stream-btn"),
+  voiceMicBtn: $("voice-mic-btn"),
+  voiceNewBtn: $("voice-new-btn"),
+  voiceLiveBadge: $("voice-live-badge"),
+  micIconOn: $("mic-icon-on"),
+  micIconOff: $("mic-icon-off"),
+  streamPauseIcon: $("stream-pause-icon"),
+  streamPlayIcon: $("stream-play-icon"),
   settingsOverlay: $("settings-overlay"),
   settingsPanel: $("settings-panel"),
   settingsCloseBtn: $("settings-close-btn"),
@@ -272,6 +284,17 @@ function init() {
   els.takeoverBtn.addEventListener("click", takeoverControl);
   els.givebackBtn.addEventListener("click", giveBackControl);
   els.voiceBtn.addEventListener("click", toggleVoice);
+
+  // Dashboard
+  if (els.dashboardBtn) {
+    els.dashboardBtn.addEventListener("click", openDashboard);
+  }
+  if (els.dashCloseBtn) {
+    els.dashCloseBtn.addEventListener("click", () => {
+      els.dashboardSection.classList.add("hidden");
+      els.welcomeSection.classList.remove("hidden");
+    });
+  }
 
   // Connector panel toggle
   els.connectorsBtn.addEventListener("click", toggleConnectorsPanel);
@@ -1170,9 +1193,11 @@ function handleMessage(msg) {
     case MSG.LIVE_AUDIO_OUT:
       if (liveMode && msg.data) {
         playLiveAudioChunk(msg.data);
-        // Orb → speaking state
-        els.voiceOrb.className = "voice-orb speaking";
-        els.voiceStatusText.textContent = "Speaking...";
+        if (!els.voiceOrb.classList.contains("speaking")) {
+          els.voiceOrb.className = "voice-orb speaking";
+          els.voiceStatusText.textContent = "Speaking...";
+          playVoiceSound("response");
+        }
       }
       break;
 
@@ -1180,16 +1205,15 @@ function handleMessage(msg) {
       if (msg.data?.text) {
         addVoiceBubble("user", msg.data.text);
         els.voiceTranscriptLive.textContent = "";
-        // Back to listening after user speaks
-        els.voiceOrb.className = "voice-orb listening";
-        els.voiceStatusText.textContent = "Listening...";
+        els.voiceOrb.className = "voice-orb thinking";
+        els.voiceStatusText.textContent = "Thinking...";
+        playVoiceSound("thinking");
       }
       break;
 
     case MSG.LIVE_TRANSCRIPT_OUT:
       if (msg.data?.text) {
         addVoiceBubble("agent", msg.data.text);
-        // Back to listening after agent finishes
         setTimeout(() => {
           if (liveMode && isRecording) {
             els.voiceOrb.className = "voice-orb listening";
@@ -1201,16 +1225,35 @@ function handleMessage(msg) {
 
     case MSG.LIVE_STATUS: {
       const st = msg.data?.status;
+      if (window._liveReconnectTimeout) { clearTimeout(window._liveReconnectTimeout); window._liveReconnectTimeout = null; }
+
       if (st === "connected") {
         els.voiceOrb.className = "voice-orb listening";
         els.voiceStatusText.textContent = "Listening...";
+        if (els.voiceLiveBadge) els.voiceLiveBadge.className = "voice-live-badge";
+        playVoiceSound("wake");
+      } else if (st === "reconnecting") {
+        els.voiceOrb.className = "voice-orb connecting";
+        els.voiceStatusText.textContent = msg.data?.message || "Extending session...";
+        if (els.voiceLiveBadge) els.voiceLiveBadge.className = "voice-live-badge paused";
+        // Show error if reconnect takes >10s
+        window._liveReconnectTimeout = setTimeout(() => {
+          if (liveMode && els.voiceOrb.classList.contains("connecting")) {
+            els.voiceOrb.className = "voice-orb error";
+            els.voiceStatusText.textContent = "Reconnection failed — click New";
+            if (els.voiceLiveBadge) els.voiceLiveBadge.className = "voice-live-badge paused";
+          }
+        }, 10000);
       } else if (st === "error") {
-        els.voiceOrb.className = "voice-orb idle";
-        els.voiceStatusText.textContent = "Connection failed";
-        stopLiveMode();
+        els.voiceOrb.className = "voice-orb error";
+        els.voiceStatusText.textContent = msg.data?.message || "Connection failed";
+        if (els.voiceLiveBadge) els.voiceLiveBadge.className = "voice-live-badge paused";
+        playVoiceSound("error");
       } else if (st === "disconnected") {
         els.voiceOrb.className = "voice-orb idle";
         els.voiceStatusText.textContent = "Session ended";
+        if (els.voiceLiveBadge) els.voiceLiveBadge.className = "voice-live-badge paused";
+        playVoiceSound("end");
       }
       break;
     }
@@ -2399,11 +2442,14 @@ async function startLiveSession() {
   }
   livePlayQueue = [];
   livePlayingSource = null;
+  livePlayNextTime = 0;
 
   // Tell backend to start Gemini Live session
-  safeSend({ type: MSG.LIVE_START });
+  safeSend({ type: MSG.LIVE_START, persona: els.personaSelect?.value || "friend" });
 
   liveMode = true;
+  window._voiceSessionStart = Date.now();
+  window._currentPersona = els.personaSelect?.value || "friend";
   voiceTranscriptHistory = [];
 
   // Show voice UI
@@ -2414,61 +2460,164 @@ async function startLiveSession() {
   els.statusSection.classList.add("hidden");
   els.voiceOrb.className = "voice-orb connecting";
   els.voiceStatusText.textContent = "Connecting...";
+  playVoiceSound("wake");
   els.voiceTranscript.innerHTML = "";
   els.voiceTranscriptLive.textContent = "";
 
-  // Bind end button
-  els.voiceEndBtn.onclick = () => {
-    endVoiceSession();
+  let streamPaused = false;
+
+  // Bind buttons
+  els.voiceEndBtn.onclick = () => endVoiceSession();
+
+  // ── Persona switch — live reconnect with new persona ──
+  els.personaSelect.onchange = async () => {
+    if (!liveMode) return;
+    const newPersona = els.personaSelect.value;
+    const personaLabel = els.personaSelect.selectedOptions[0]?.text || newPersona;
+    els.voiceOrb.className = "voice-orb connecting";
+    els.voiceStatusText.textContent = `Switching to ${personaLabel}...`;
+
+    // Save current session before switching
+    const durationSecs = Math.round((Date.now() - (window._voiceSessionStart || Date.now())) / 1000);
+    if (voiceTranscriptHistory.length >= 4) {
+      const prevPersona = window._currentPersona || "friend";
+      let markdown = "";
+      for (const entry of voiceTranscriptHistory) {
+        const label = entry.role === "user" ? "**You**" : "**G-Axis**";
+        markdown += `${label}: ${entry.text}\n\n`;
+      }
+      // Fire and forget — don't block switch
+      fetch("http://localhost:8000/api/analyze-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: `session_${Date.now()}`,
+          persona: prevPersona,
+          started_at: new Date(window._voiceSessionStart || Date.now()).toISOString(),
+          ended_at: new Date().toISOString(),
+          duration_secs: durationSecs,
+          transcript: markdown,
+        }),
+      }).catch(() => {});
+    }
+
+    // Clear transcript for new persona session
+    voiceTranscriptHistory = [];
+    els.voiceTranscript.innerHTML = "";
+    els.voiceTranscriptLive.textContent = "";
+    _lastBubbleRole = null;
+    _lastBubbleEl = null;
+    window._voiceSessionStart = Date.now();
+    window._currentPersona = newPersona;
+
+    // Stop current, start new
+    safeSend({ type: MSG.LIVE_STOP });
+    setTimeout(() => {
+      safeSend({ type: MSG.LIVE_START, persona: newPersona });
+    }, 500);
+  };
+
+  // ── Stream play/pause — pauses/resumes the Gemini Live session ──
+  els.voiceStreamBtn.onclick = () => {
+    if (!streamPaused) {
+      // Pause stream — stop Gemini session AND mic
+      safeSend({ type: MSG.LIVE_STOP });
+      safeSend({ type: "gaxis:restart_mic_stop" });
+      streamPaused = true;
+      els.streamPauseIcon.style.display = "none";
+      els.streamPlayIcon.style.display = "inline";
+      els.voiceStreamBtn.className = "voice-control-btn stream-off";
+      els.voiceOrb.className = "voice-orb idle";
+      els.voiceStatusText.textContent = "Stream paused";
+      els.voiceLiveBadge.className = "voice-live-badge paused";
+    } else {
+      // Resume stream — restart Gemini session (keeps conversation transcript)
+      safeSend({ type: MSG.LIVE_START, persona: els.personaSelect?.value || "friend" });
+      streamPaused = false;
+      els.streamPauseIcon.style.display = "inline";
+      els.streamPlayIcon.style.display = "none";
+      els.voiceStreamBtn.className = "voice-control-btn stream-on";
+      els.voiceOrb.className = "voice-orb listening";
+      els.voiceStatusText.textContent = "Listening...";
+      els.voiceLiveBadge.className = "voice-live-badge";
+    }
+  };
+
+  // ── Mic mute/unmute — independent of stream ──
+  els.voiceMicBtn.onclick = () => {
+    if (streamPaused) return; // Can't toggle mic when stream is paused
+    if (isRecording) {
+      safeSend({ type: "gaxis:restart_mic_stop" });
+      isRecording = false;
+      els.micIconOn.style.display = "none";
+      els.micIconOff.style.display = "inline";
+      els.voiceMicBtn.className = "voice-control-btn mic-off";
+      els.voiceOrb.className = "voice-orb idle";
+      els.voiceStatusText.textContent = "Mic muted — stream live";
+    } else {
+      safeSend({ type: "gaxis:restart_mic" });
+      isRecording = true;
+      els.micIconOn.style.display = "inline";
+      els.micIconOff.style.display = "none";
+      els.voiceMicBtn.className = "voice-control-btn mic-on";
+      els.voiceOrb.className = "voice-orb listening";
+      els.voiceStatusText.textContent = "Listening...";
+    }
+  };
+
+  // ── Refresh — new conversation with fresh context ──
+  els.voiceNewBtn.onclick = () => {
+    safeSend({ type: MSG.LIVE_STOP });
+    voiceTranscriptHistory = [];
+    els.voiceTranscript.innerHTML = "";
+    els.voiceTranscriptLive.textContent = "";
+    els.voiceOrb.className = "voice-orb connecting";
+    els.voiceStatusText.textContent = "Starting new conversation...";
+    streamPaused = false;
+    els.streamPauseIcon.style.display = "inline";
+    els.streamPlayIcon.style.display = "none";
+    els.voiceStreamBtn.className = "voice-control-btn stream-on";
+    els.voiceLiveBadge.className = "voice-live-badge";
+    // Fresh Gemini session after brief delay
+    setTimeout(() => {
+      safeSend({ type: MSG.LIVE_START, persona: els.personaSelect?.value || "friend" });
+      liveMode = true;
+      isRecording = true;
+      els.micIconOn.style.display = "inline";
+      els.micIconOff.style.display = "none";
+      els.voiceMicBtn.className = "voice-control-btn mic-on";
+      els.voiceOrb.className = "voice-orb listening";
+      els.voiceStatusText.textContent = "Listening...";
+    }, 500);
   };
 }
 
-/** Start mic streaming into the live session. */
+/** Start mic streaming into the live session.
+ *  Mic capture is handled by the offscreen document via the service worker.
+ *  The service worker creates the offscreen doc and starts mic on LIVE_START.
+ *  If resuming (liveMode already true), tell service worker to restart mic.
+ */
 async function startMic() {
-  if (!liveMode) await startLiveSession();
-
-  try {
-    liveMicStream = await navigator.mediaDevices.getUserMedia({
-      audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true },
-    });
-  } catch (e) {
-    console.error("[G-Axis] Mic access denied:", e);
-    addTimelineEntry("error", "Microphone", "Permission denied — check browser settings");
-    return;
+  if (!liveMode) {
+    await startLiveSession();
+    // LIVE_START sent inside startLiveSession → service worker creates offscreen → starts mic
+  } else {
+    // Resuming from pause — ask service worker to restart offscreen mic
+    safeSend({ type: "gaxis:restart_mic" });
   }
-
-  liveAudioCtx = new AudioContext({ sampleRate: 16000 });
-  const source = liveAudioCtx.createMediaStreamSource(liveMicStream);
-  const processor = liveAudioCtx.createScriptProcessor(4096, 1, 1);
-
-  processor.onaudioprocess = (e) => {
-    if (!liveMode || !isRecording) return;
-    const float32 = e.inputBuffer.getChannelData(0);
-    const int16 = new Int16Array(float32.length);
-    for (let i = 0; i < float32.length; i++) {
-      const s = Math.max(-1, Math.min(1, float32[i]));
-      int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-    }
-    const bytes = new Uint8Array(int16.buffer);
-    let binary = "";
-    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-    const b64 = btoa(binary);
-    safeSend({ type: MSG.LIVE_AUDIO_IN, data: b64 });
-  };
-
-  source.connect(processor);
-  processor.connect(liveAudioCtx.destination);
 
   isRecording = true;
   els.voiceBtn.classList.add("recording", "live-mode");
   els.voiceBtn.title = "Stop microphone";
   els.voiceOrb.className = "voice-orb listening";
   els.voiceStatusText.textContent = "Listening...";
+  playVoiceSound("listening");
 }
 
 /** Stop mic but keep live session active (can still type). */
 function stopMic() {
   isRecording = false;
+  // Stop direct mic if active
   if (liveMicStream) {
     liveMicStream.getTracks().forEach((t) => t.stop());
     liveMicStream = null;
@@ -2477,6 +2626,8 @@ function stopMic() {
     liveAudioCtx.close().catch(() => {});
     liveAudioCtx = null;
   }
+  // Also stop offscreen mic in case that path was used
+  chrome.runtime.sendMessage({ type: "offscreen:stop_mic" }).catch(() => {});
   els.voiceBtn.classList.remove("recording", "live-mode");
   els.voiceBtn.title = "Start microphone";
   if (liveMode) {
@@ -2490,82 +2641,280 @@ async function startLiveMode() {
   await startMic();
 }
 
-function addVoiceBubble(role, text) {
-  const bubble = document.createElement("div");
-  bubble.className = `voice-bubble ${role}`;
-  const label = role === "user" ? "You" : "G-Axis";
-  bubble.innerHTML = `<div class="bubble-label">${label}</div>${escapeHtml(text)}`;
-  els.voiceTranscript.appendChild(bubble);
-  els.voiceTranscript.scrollTop = els.voiceTranscript.scrollHeight;
+// ── Voice Sound Effects (Web Audio API — no external files) ──
 
-  // Save to history
-  voiceTranscriptHistory.push({
-    role, text,
-    timestamp: new Date().toISOString(),
-  });
+function playVoiceSound(type) {
+  try {
+    const ctx = new AudioContext();
+    const gain = ctx.createGain();
+    gain.connect(ctx.destination);
+
+    switch (type) {
+      case "wake": {
+        // Soft ascending chime
+        const o = ctx.createOscillator();
+        o.type = "sine";
+        o.frequency.setValueAtTime(523, ctx.currentTime); // C5
+        o.frequency.linearRampToValueAtTime(784, ctx.currentTime + 0.15); // G5
+        gain.gain.setValueAtTime(0.15, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
+        o.connect(gain);
+        o.start();
+        o.stop(ctx.currentTime + 0.4);
+        break;
+      }
+      case "listening": {
+        // Light rising tone
+        const o = ctx.createOscillator();
+        o.type = "sine";
+        o.frequency.setValueAtTime(440, ctx.currentTime); // A4
+        o.frequency.linearRampToValueAtTime(660, ctx.currentTime + 0.2); // E5
+        gain.gain.setValueAtTime(0.12, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+        o.connect(gain);
+        o.start();
+        o.stop(ctx.currentTime + 0.35);
+        break;
+      }
+      case "thinking": {
+        // Subtle ambient pulse
+        const o = ctx.createOscillator();
+        o.type = "triangle";
+        o.frequency.setValueAtTime(330, ctx.currentTime);
+        o.frequency.linearRampToValueAtTime(350, ctx.currentTime + 0.5);
+        gain.gain.setValueAtTime(0.06, ctx.currentTime);
+        gain.gain.linearRampToValueAtTime(0.08, ctx.currentTime + 0.25);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.6);
+        o.connect(gain);
+        o.start();
+        o.stop(ctx.currentTime + 0.6);
+        break;
+      }
+      case "response": {
+        // Pleasant ding
+        const o = ctx.createOscillator();
+        o.type = "sine";
+        o.frequency.setValueAtTime(880, ctx.currentTime); // A5
+        gain.gain.setValueAtTime(0.12, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
+        o.connect(gain);
+        o.start();
+        o.stop(ctx.currentTime + 0.5);
+        break;
+      }
+      case "success": {
+        // Uplifting two-note chime
+        const o1 = ctx.createOscillator();
+        const o2 = ctx.createOscillator();
+        o1.type = "sine";
+        o2.type = "sine";
+        o1.frequency.value = 523; // C5
+        o2.frequency.value = 784; // G5
+        const g1 = ctx.createGain();
+        const g2 = ctx.createGain();
+        g1.gain.setValueAtTime(0.12, ctx.currentTime);
+        g1.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
+        g2.gain.setValueAtTime(0, ctx.currentTime);
+        g2.gain.setValueAtTime(0.12, ctx.currentTime + 0.15);
+        g2.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.6);
+        o1.connect(g1).connect(ctx.destination);
+        o2.connect(g2).connect(ctx.destination);
+        o1.start();
+        o2.start(ctx.currentTime + 0.15);
+        o1.stop(ctx.currentTime + 0.4);
+        o2.stop(ctx.currentTime + 0.6);
+        break;
+      }
+      case "error": {
+        // Soft descending tone
+        const o = ctx.createOscillator();
+        o.type = "sine";
+        o.frequency.setValueAtTime(440, ctx.currentTime); // A4
+        o.frequency.linearRampToValueAtTime(280, ctx.currentTime + 0.3);
+        gain.gain.setValueAtTime(0.1, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
+        o.connect(gain);
+        o.start();
+        o.stop(ctx.currentTime + 0.4);
+        break;
+      }
+      case "end": {
+        // Gentle descending chime
+        const o = ctx.createOscillator();
+        o.type = "sine";
+        o.frequency.setValueAtTime(659, ctx.currentTime); // E5
+        o.frequency.linearRampToValueAtTime(440, ctx.currentTime + 0.3); // A4
+        gain.gain.setValueAtTime(0.1, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
+        o.connect(gain);
+        o.start();
+        o.stop(ctx.currentTime + 0.5);
+        break;
+      }
+    }
+
+    // Auto-close context
+    setTimeout(() => ctx.close().catch(() => {}), 1000);
+  } catch (_) {}
+}
+
+let _lastBubbleRole = null;
+let _lastBubbleEl = null;
+let _transcriptBuffer = { role: null, text: "" };
+let _transcriptFlushTimer = null;
+
+function addVoiceBubble(role, text) {
+  // Buffer chunks and flush after 400ms of no new chunks
+  if (_transcriptBuffer.role === role) {
+    _transcriptBuffer.text += text;
+  } else {
+    flushTranscriptBuffer();
+    _transcriptBuffer.role = role;
+    _transcriptBuffer.text = text;
+  }
+
+  if (_transcriptFlushTimer) clearTimeout(_transcriptFlushTimer);
+  _transcriptFlushTimer = setTimeout(flushTranscriptBuffer, 400);
+
+  // Update live preview immediately
+  if (els.voiceTranscriptLive) {
+    els.voiceTranscriptLive.textContent = _transcriptBuffer.text;
+  }
+}
+
+function flushTranscriptBuffer() {
+  if (_transcriptFlushTimer) { clearTimeout(_transcriptFlushTimer); _transcriptFlushTimer = null; }
+  if (!_transcriptBuffer.text || !_transcriptBuffer.role) return;
+
+  const role = _transcriptBuffer.role;
+  const text = _transcriptBuffer.text;
+  _transcriptBuffer = { role: null, text: "" };
+
+  // Clear live preview
+  if (els.voiceTranscriptLive) els.voiceTranscriptLive.textContent = "";
+
+  // Merge into last bubble if same role
+  if (role === _lastBubbleRole && _lastBubbleEl && _lastBubbleEl.parentNode) {
+    const contentSpan = _lastBubbleEl.querySelector(".bubble-content");
+    if (contentSpan) {
+      contentSpan.textContent += text;
+    }
+    const lastEntry = voiceTranscriptHistory[voiceTranscriptHistory.length - 1];
+    if (lastEntry && lastEntry.role === role) {
+      lastEntry.text += text;
+    }
+  } else {
+    const bubble = document.createElement("div");
+    bubble.className = `voice-bubble ${role}`;
+    const label = role === "user" ? "You" : "G-Axis";
+    bubble.innerHTML = `<div class="bubble-label">${label}</div><span class="bubble-content">${escapeHtml(text)}</span>`;
+    els.voiceTranscript.appendChild(bubble);
+    _lastBubbleRole = role;
+    _lastBubbleEl = bubble;
+
+    voiceTranscriptHistory.push({ role, text, timestamp: new Date().toISOString() });
+  }
+  els.voiceTranscript.scrollTop = els.voiceTranscript.scrollHeight;
 }
 
 async function endVoiceSession() {
+  const sessionStartTime = window._voiceSessionStart || Date.now();
+  const durationSecs = Math.round((Date.now() - sessionStartTime) / 1000);
+  const persona = els.personaSelect?.value || "friend";
+
   stopLiveMode();
 
   // Hide voice UI, show welcome
   els.voiceSection.classList.add("hidden");
   els.welcomeSection.classList.remove("hidden");
 
-  // Save transcript to Google Docs if there's content
-  if (voiceTranscriptHistory.length > 0) {
-    try {
-      const title = `G-Axis Conversation — ${new Date().toLocaleDateString()}`;
-      let markdown = `# ${title}\n\n`;
-      for (const entry of voiceTranscriptHistory) {
-        const label = entry.role === "user" ? "**You**" : "**G-Axis**";
-        markdown += `${label}: ${entry.text}\n\n`;
-      }
+  // Analyze if conversation was substantive
+  const MIN_TURNS = 4;
+  const MIN_TOTAL_CHARS = 100;
 
-      // Send to backend to create .docx and upload
-      safeSend({
-        type: MSG.RUN_TASK,
-        instruction: `__save_transcript__`,
-        data: { title, markdown },
-      });
-
-      // Also save via research_complete flow
-      const resp = await fetch(`http://localhost:${location.port || 8000}/api/save-transcript`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, content: markdown }),
-      }).catch(() => null);
-
-      if (resp?.ok) {
-        const result = await resp.json();
-        // Upload to Drive if we have a download URL
-        if (result.download_url) {
-          safeSend({
-            type: "research_complete_internal",
-            data: { title, download_url: result.download_url, filename: result.filename },
-          });
+  if (voiceTranscriptHistory.length >= MIN_TURNS) {
+    const totalChars = voiceTranscriptHistory.reduce((sum, e) => sum + (e.text?.length || 0), 0);
+    if (totalChars >= MIN_TOTAL_CHARS) {
+      try {
+        const title = `G-Axis Conversation — ${new Date().toLocaleDateString()}`;
+        let markdown = `# ${title}\n\n`;
+        for (const entry of voiceTranscriptHistory) {
+          const label = entry.role === "user" ? "**You**" : "**G-Axis**";
+          markdown += `${label}: ${entry.text}\n\n`;
         }
+
+        // Analyze session — skills, XP, insights
+        const analyzeResp = await fetch(`http://localhost:8000/api/analyze-session`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: `session_${Date.now()}`,
+            persona,
+            started_at: new Date(sessionStartTime).toISOString(),
+            ended_at: new Date().toISOString(),
+            duration_secs: durationSecs,
+            transcript: markdown,
+          }),
+        }).catch(() => null);
+
+        if (analyzeResp?.ok) {
+          const analysis = await analyzeResp.json();
+          if (!analysis.skipped) {
+            // Show brief session summary
+            console.log("[G-Axis] Session analyzed:", analysis);
+            // TODO: Show XP toast / session summary card
+          }
+        }
+
+        // Save transcript as .docx
+        const resp = await fetch(`http://localhost:8000/api/save-transcript`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title, content: markdown }),
+        }).catch(() => null);
+
+        if (resp?.ok) {
+          const result = await resp.json();
+          if (result.download_url) {
+            safeSend({
+              type: "research_complete_internal",
+              data: { title, download_url: result.download_url, filename: result.filename },
+            });
+          }
+        }
+      } catch (err) {
+        console.error("[G-Axis] Transcript save failed:", err);
       }
-    } catch (err) {
-      console.error("[G-Axis] Transcript save failed:", err);
     }
   }
 }
 
 function stopLiveMode() {
-  // Stop mic
-  stopMic();
+  // 1. Reset playback state
+  livePlayQueue = [];
+  livePlayNextTime = 0;
 
-  // Stop playback
+  // 2. Stop current playback with state guard
   if (livePlayingSource) {
-    try { livePlayingSource.stop(); } catch (_) {}
+    try {
+      if (livePlayCtx && livePlayCtx.state !== "closed") {
+        livePlayingSource.stop();
+      }
+    } catch (_) {}
     livePlayingSource = null;
   }
-  if (livePlayCtx) {
+
+  // 3. Close playback context
+  if (livePlayCtx && livePlayCtx.state !== "closed") {
     livePlayCtx.close().catch(() => {});
-    livePlayCtx = null;
   }
-  livePlayQueue = [];
+  livePlayCtx = null;
+
+  // 4. Stop mic
+  stopMic();
+
+  // 5. Flush transcript buffer
+  if (typeof flushTranscriptBuffer === "function") flushTranscriptBuffer();
 
   liveMode = false;
 
@@ -2576,11 +2925,16 @@ function stopLiveMode() {
   els.voiceBtn.title = "Voice input";
   els.voiceOrb.className = "voice-orb idle";
   els.voiceStatusText.textContent = "Session ended";
+  playVoiceSound("end");
 }
+
+// ── Gapless audio playback using scheduled start times ──
+// Instead of onended callbacks (which have ~5-20ms gaps), we schedule
+// each chunk to start exactly when the previous one ends.
+let livePlayNextTime = 0; // AudioContext time for next chunk
 
 function playLiveAudioChunk(base64Pcm) {
   if (!livePlayCtx || livePlayCtx.state === "closed") return;
-  // Resume if browser suspended the context (e.g. tab switch, policy)
   if (livePlayCtx.state === "suspended") {
     livePlayCtx.resume().catch(() => {});
   }
@@ -2595,30 +2949,136 @@ function playLiveAudioChunk(base64Pcm) {
     float32[i] = int16[i] / (int16[i] < 0 ? 0x8000 : 0x7FFF);
   }
 
-  // Create AudioBuffer and queue for playback
-  const buffer = livePlayCtx.createBuffer(1, float32.length, 24000);
-  buffer.getChannelData(0).set(float32);
-  livePlayQueue.push(buffer);
+  try {
+    const buffer = livePlayCtx.createBuffer(1, float32.length, 24000);
+    buffer.getChannelData(0).set(float32);
 
-  // Start playing if not already
-  if (!livePlayingSource) _playNextChunk();
-}
+    const source = livePlayCtx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(livePlayCtx.destination);
 
-function _playNextChunk() {
-  if (!livePlayCtx || livePlayCtx.state === "closed" || livePlayQueue.length === 0) {
+    // Schedule gapless: start exactly when previous chunk ends
+    const now = livePlayCtx.currentTime;
+    const startTime = Math.max(now, livePlayNextTime);
+    source.start(startTime);
+    livePlayNextTime = startTime + buffer.duration;
+    livePlayingSource = source;
+  } catch (e) {
+    console.error("[G-Axis] Playback error:", e.message);
     livePlayingSource = null;
-    return;
+    livePlayNextTime = 0;
   }
-  const buffer = livePlayQueue.shift();
-  const source = livePlayCtx.createBufferSource();
-  source.buffer = buffer;
-  source.connect(livePlayCtx.destination);
-  source.onended = () => _playNextChunk();
-  livePlayingSource = source;
-  source.start();
 }
 
 // Chat message helper for transcripts
+async function openDashboard() {
+  els.welcomeSection.classList.add("hidden");
+  els.dashboardSection.classList.remove("hidden");
+
+  try {
+    const resp = await fetch(`http://localhost:8000/api/dashboard`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const stats = data.stats || {};
+    const recent = data.recent_sessions || [];
+
+    const emptyEl = document.getElementById("dash-empty");
+    const contentEl = document.getElementById("dash-content");
+
+    // Show empty state if no sessions
+    if ((stats.total_sessions || 0) === 0) {
+      if (emptyEl) emptyEl.classList.remove("hidden");
+      if (contentEl) contentEl.classList.add("hidden");
+      return;
+    }
+    if (emptyEl) emptyEl.classList.add("hidden");
+    if (contentEl) contentEl.classList.remove("hidden");
+
+    const $v = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+
+    // Level card
+    const level = stats.level || 1;
+    const xp = stats.xp || 0;
+    const xpInLevel = xp % 500;
+    const xpForNext = 500;
+    $v("dash-level", level);
+    $v("dash-level-num", level);
+    $v("dash-xp", xp);
+    $v("dash-xp-next", level * 500);
+    const xpFill = document.getElementById("dash-xp-fill");
+    if (xpFill) xpFill.style.width = `${(xpInLevel / xpForNext) * 100}%`;
+
+    // Stats
+    $v("dash-streak", stats.current_streak || 0);
+    $v("dash-sessions", stats.total_sessions || 0);
+    $v("dash-minutes", stats.total_duration_mins || 0);
+
+    // Skills
+    const skills = stats.skill_scores || {};
+    const skillValues = Object.values(skills);
+    const avgSkill = skillValues.length ? Math.round(skillValues.reduce((a, b) => a + b, 0) / skillValues.length) : 0;
+    $v("dash-avg-skill", avgSkill ? `${avgSkill}/100` : "--");
+
+    for (const [key, val] of Object.entries(skills)) {
+      const fill = document.getElementById(`skill-${key}`);
+      const valEl = document.getElementById(`skill-${key}-val`);
+      if (fill) fill.style.width = `${val}%`;
+      if (valEl) valEl.textContent = val;
+    }
+
+    // Weekly activity (GitHub-style dots)
+    const weekEl = document.getElementById("dash-activity-week");
+    if (weekEl) {
+      const activity = stats.daily_activity || [];
+      const activityMap = {};
+      for (const d of activity) activityMap[d.date] = d.minutes;
+
+      const days = ["M", "T", "W", "T", "F", "S", "S"];
+      const today = new Date();
+      let html = "";
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(today);
+        d.setDate(d.getDate() - i);
+        const dateStr = d.toISOString().split("T")[0];
+        const mins = activityMap[dateStr] || 0;
+        const level = mins === 0 ? "empty" : mins < 5 ? "low" : mins < 15 ? "med" : "high";
+        const isToday = i === 0;
+        html += `<div class="activity-day ${isToday ? "today" : ""}">
+          <div class="activity-dot ${level}" title="${dateStr}: ${mins}min"></div>
+          <span class="activity-day-label">${days[d.getDay() === 0 ? 6 : d.getDay() - 1]}</span>
+        </div>`;
+      }
+      weekEl.innerHTML = html;
+    }
+
+    // Recent sessions
+    const listEl = document.getElementById("dash-recent-list");
+    if (listEl) {
+      if (recent.length === 0) {
+        listEl.innerHTML = '<div class="dash-recent-item"><div class="dash-recent-summary">Start a conversation to see it here</div></div>';
+      } else {
+        listEl.innerHTML = recent.slice().reverse().map(s => {
+          const mins = Math.round((s.duration_secs || 0) / 60);
+          const skillTags = Object.entries(s.skills || {})
+            .filter(([, v]) => v > 60)
+            .map(([k]) => `<span class="dash-recent-skill">${k}</span>`)
+            .join("");
+          return `<div class="dash-recent-item">
+            <div class="dash-recent-top">
+              <span class="dash-recent-persona">${s.persona || "friend"}</span>
+              <span class="dash-recent-meta">${mins}min</span>
+            </div>
+            <div class="dash-recent-summary">${s.summary || s.topics?.join(", ") || "Conversation"}</div>
+            ${skillTags ? `<div class="dash-recent-skills">${skillTags}</div>` : ""}
+          </div>`;
+        }).join("");
+      }
+    }
+  } catch (e) {
+    console.error("[G-Axis] Dashboard load failed:", e);
+  }
+}
+
 function addChatMessage(role, text) {
   els.chatSection.classList.remove("hidden");
   const div = document.createElement("div");
