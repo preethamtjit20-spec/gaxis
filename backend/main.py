@@ -690,7 +690,8 @@ async def save_transcript(req: TranscriptRequest):
     try:
         filepath = markdown_to_docx(req.content, req.title)
         filename = os.path.basename(filepath)
-        download_url = f"http://localhost:{os.environ.get('PORT', '8000')}/api/doc/{filename}"
+        # Use request host so URL works on both local and Cloud Run
+        download_url = f"/api/doc/{filename}"
         return JSONResponse({"success": True, "download_url": download_url, "filename": filename})
     except Exception as e:
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
