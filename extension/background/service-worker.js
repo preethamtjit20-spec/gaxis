@@ -891,6 +891,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
       }
       const persona = message.persona || "friend";
+      // API key from extension local settings (user enters once, stored in chrome.storage)
       const apiKey = settings.geminiApiKey || "";
       if (!apiKey) {
         safeBroadcast({ type: MSG.LIVE_STATUS, data: { status: "error", message: "Set Gemini API key in G-Axis settings" } });
