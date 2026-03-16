@@ -11,7 +11,7 @@
 // Docs are created server-side as .docx files (no OAuth needed)
 
 import { MSG, DEFAULT_SETTINGS } from "../shared/types.js";
-import { GeminiLiveClient, PERSONAS } from "./gemini-live.js";
+import { GeminiLiveClient, PERSONAS, setApiKey } from "./gemini-live.js";
 
 let ws = null;
 let wsReconnectTimer = null;
@@ -891,6 +891,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
       }
       const persona = message.persona || "friend";
+      const apiKey = settings.geminiApiKey || "";
+      if (!apiKey) {
+        safeBroadcast({ type: MSG.LIVE_STATUS, data: { status: "error", message: "Set Gemini API key in G-Axis settings" } });
+        sendResponse({ ok: false });
+        break;
+      }
+      setApiKey(apiKey);
       geminiLive = new GeminiLiveClient(persona, {
         onAudioOut: (b64) => safeBroadcast({ type: MSG.LIVE_AUDIO_OUT, data: b64 }),
         onTranscriptIn: (text) => safeBroadcast({ type: MSG.LIVE_TRANSCRIPT_IN, data: { text } }),

@@ -91,4 +91,5 @@ export const DEFAULT_SETTINGS = {
   allowDownloads: false,
   voiceEnabled: true,
   voiceLanguage: "en-US",
+  geminiApiKey: "",
 };
