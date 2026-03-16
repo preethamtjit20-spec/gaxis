@@ -445,7 +445,7 @@ Be thorough and specific — include real names, prices, ratings, addresses wher
             # Generate .docx
             filepath = markdown_to_docx(content, title)
             filename = os.path.basename(filepath)
-            download_url = f"http://localhost:{os.environ.get('PORT', '8000')}/api/doc/{filename}"
+            download_url = f"/api/doc/{filename}"
             logger.info(f"Generated .docx: {filepath}")
 
             # Record replay step
