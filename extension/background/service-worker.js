@@ -672,7 +672,10 @@ function handleBackendMessage(msg) {
     (async () => {
       try {
         const title = msg.data.title || "Research Document";
-        const downloadUrl = msg.data.download_url;
+        let downloadUrl = msg.data.download_url;
+        if (downloadUrl && downloadUrl.startsWith("/")) {
+          downloadUrl = settings.backendUrl + downloadUrl;
+        }
 
         // 1. Close the search/scanning tab
         if (agentTabId != null && agentTabId !== originalTabId) {
@@ -761,7 +764,11 @@ function handleBackendMessage(msg) {
 
       } catch (err) {
         console.error("[G-Axis] Doc upload failed:", err);
-        try { chrome.tabs.create({ url: msg.data.download_url, active: true }); } catch (_) {}
+        try {
+          let fallbackUrl = msg.data.download_url;
+          if (fallbackUrl && fallbackUrl.startsWith("/")) fallbackUrl = settings.backendUrl + fallbackUrl;
+          chrome.tabs.create({ url: fallbackUrl, active: true });
+        } catch (_) {}
       }
     })();
   }

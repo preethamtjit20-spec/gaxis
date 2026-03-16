@@ -1841,6 +1841,11 @@ function resetConfirmPosition() {
 }
 
 function showResearchInline(title, markdown, downloadUrl) {
+  // Resolve relative download URLs against backend
+  if (downloadUrl && downloadUrl.startsWith("/")) {
+    const backendUrl = "https://gaxis-132388856648.us-central1.run.app";
+    downloadUrl = backendUrl + downloadUrl;
+  }
   // Add research card to the chat/timeline area
   const card = document.createElement("div");
   card.className = "research-card";
