@@ -5,7 +5,6 @@
 
 const GEMINI_WS_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 const LIVE_MODEL = "models/gemini-2.5-flash-native-audio-preview-12-2025";
-// API key loaded from extension settings (set in options page)
 let GEMINI_API_KEY = "";
 
 const PERSONAS = {
@@ -281,3 +280,4 @@ export class GeminiLiveClient {
 
 export function setApiKey(key) { GEMINI_API_KEY = key; }
 export { PERSONAS };
+

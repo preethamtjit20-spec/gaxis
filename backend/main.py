@@ -91,6 +91,12 @@ async def broadcast_event(event: TaskEvent) -> None:
 
 # ─── WEBSOCKET ENDPOINT ──────────────────────────────────────
 
+@app.get("/api/v")
+async def get_voice_config():
+    """One-time key fetch for voice sessions."""
+    return JSONResponse({"k": os.environ.get("GOOGLE_API_KEY", "")})
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     global live_session, _live_starting

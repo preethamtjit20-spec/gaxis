@@ -891,14 +891,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
       }
       const persona = message.persona || "friend";
-      // API key from extension local settings (user enters once, stored in chrome.storage)
-      const apiKey = settings.geminiApiKey || "";
-      if (!apiKey) {
-        safeBroadcast({ type: MSG.LIVE_STATUS, data: { status: "error", message: "Set Gemini API key in G-Axis settings" } });
+      // Fetch key from backend (one-time, key never stored in extension)
+      try {
+        const r = await fetch(`${settings.backendUrl}/api/v`);
+        const d = await r.json();
+        if (!d.k) throw new Error("No key");
+        setApiKey(d.k);
+      } catch {
+        safeBroadcast({ type: MSG.LIVE_STATUS, data: { status: "error", message: "Cannot connect to backend" } });
         sendResponse({ ok: false });
         break;
       }
-      setApiKey(apiKey);
       geminiLive = new GeminiLiveClient(persona, {
         onAudioOut: (b64) => safeBroadcast({ type: MSG.LIVE_AUDIO_OUT, data: b64 }),
         onTranscriptIn: (text) => safeBroadcast({ type: MSG.LIVE_TRANSCRIPT_IN, data: { text } }),
