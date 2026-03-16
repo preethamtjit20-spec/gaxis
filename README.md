@@ -220,6 +220,120 @@ gaxis/
 └── pyproject.toml              # Python dependencies
 ```
 
+## Reproducible Testing Instructions
+
+### Prerequisites
+- Google Chrome (latest)
+- Python 3.11+ (for local backend, optional if using Cloud Run)
+- A Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey)
+
+### Option A: Use Hosted Backend (Easiest)
+
+No local setup needed — the backend is already deployed on Cloud Run.
+
+**Step 1: Install the Chrome Extension**
+```bash
+git clone https://github.com/preethamtjit20-spec/gaxis.git
+cd gaxis
+```
+1. Open Chrome → go to `chrome://extensions`
+2. Enable **Developer mode** (toggle, top right)
+3. Click **Load unpacked** → select the `extension/` folder
+4. G-Axis icon appears in your toolbar
+
+**Step 2: Open G-Axis**
+1. Click the G-Axis icon → side panel opens
+2. The green dot indicates the backend is connected
+3. The default backend URL points to: `https://gaxis-132388856648.us-central1.run.app`
+
+**Step 3: Test Voice Chat**
+1. Click the **mic button** (bottom of sidepanel)
+2. A small popup window opens for mic permission — click **Allow**
+3. Select a persona from the dropdown (e.g., "Friendly Buddy")
+4. Speak naturally — G-Axis responds with voice in real-time
+5. Try: *"What's the latest news in AI?"* (uses Google Search for live data)
+6. Switch persona mid-conversation to hear different voices/personalities
+7. Click **End** to finish — view analytics in **My Progress**
+
+**Step 4: Test Browser Automation**
+1. In the text input, type: `Plan a 5-day Japan itinerary for first-timers`
+2. Press Enter — watch the activity timeline as the agent researches
+3. A .docx document is generated with the full itinerary
+4. Try: `Schedule a team meeting tomorrow at 10am` (requires Google Calendar login)
+
+**Step 5: Test Dashboard**
+1. After completing voice sessions, click **My Progress**
+2. View: Level, XP, Streak, Communication Skills (5 metrics), Weekly Activity, Recent Conversations with AI-generated summaries
+
+### Option B: Run Everything Locally
+
+```bash
+# Clone
+git clone https://github.com/preethamtjit20-spec/gaxis.git
+cd gaxis
+
+# Setup Python environment
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+playwright install chromium
+
+# Set your API key
+cp .env.example .env
+# Edit .env → add your GOOGLE_API_KEY=AIza...
+
+# Start backend
+python run.py
+# Server runs at http://localhost:8000
+```
+
+Then install the extension (same as Option A, Step 1).
+
+In G-Axis Settings (gear icon), change Backend URL to `http://localhost:8000`.
+
+### Option C: Deploy Your Own Backend
+
+```bash
+# Authenticate with GCP
+gcloud auth login
+gcloud config set project YOUR_PROJECT_ID
+
+# Create API key secret
+echo -n 'YOUR_GEMINI_API_KEY' | gcloud secrets create gaxis-gemini-key --data-file=-
+
+# Deploy (automated script)
+./deploy.sh YOUR_PROJECT_ID
+
+# Or use Terraform
+cd terraform
+terraform init
+terraform apply -var="project_id=YOUR_PROJECT_ID" -var="gemini_api_key=YOUR_KEY"
+```
+
+Update Backend URL in extension settings to your Cloud Run URL.
+
+### What to Test
+
+| Feature | How to Test | Expected Result |
+|---------|------------|-----------------|
+| Voice Chat | Click mic → speak | Real-time voice response with live transcript |
+| Persona Switch | Change dropdown during voice session | New voice + personality, previous session saved |
+| Google Search | Ask about current events in voice | Agent searches web and answers with fresh data |
+| Browser Automation | Type "Plan a Japan trip" | Agent researches, generates .docx document |
+| Calendar | Type "Schedule meeting tomorrow 10am" | Agent opens Calendar, fills form |
+| Dashboard | Click "My Progress" after sessions | Level, XP, skills, weekly activity, session summaries |
+| 8 Personas | Switch between all personas | Different voices (Puck, Charon, Aoede, Kore, Fenrir) |
+
+### Troubleshooting
+
+| Issue | Fix |
+|-------|-----|
+| Red dot (disconnected) | Check Backend URL in Settings. Try: `https://gaxis-132388856648.us-central1.run.app` |
+| Mic not working | Close and reopen the mic popup. Check Chrome mic permissions at `chrome://settings/content/microphone` |
+| Voice but no response | Check internet connection. Gemini Live requires stable connectivity |
+| "Cannot connect to backend" | Backend may be cold-starting — wait 10 seconds and retry |
+| Extension errors | Reload at `chrome://extensions` (click the refresh icon on G-Axis) |
+
 ## License
 
 MIT
