@@ -79,7 +79,7 @@ export const MSG = {
 
 // Default settings
 export const DEFAULT_SETTINGS = {
-  backendUrl: "http://localhost:8000",
+  backendUrl: "https://gaxis-132388856648.us-central1.run.app",
   model: "gemini-3-flash-preview",
   temperature: 0.2,
   maxSteps: 30,
