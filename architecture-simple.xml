@@ -1,0 +1,269 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="G-Axis Architecture" id="simple-arch">
+    <mxGraphModel dx="1400" dy="820" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="750" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Title -->
+        <mxCell id="title" value="G-Axis Architecture" style="text;html=1;align=center;fontSize=22;fontStyle=1;fontColor=#202124;fontFamily=Google Sans;" vertex="1" parent="1">
+          <mxGeometry x="500" y="15" width="400" height="32" as="geometry" />
+        </mxCell>
+
+        <!-- ══════════════════════════════════════ -->
+        <!-- ROW 1: USER -->
+        <!-- ══════════════════════════════════════ -->
+        <mxCell id="user" value="User" style="shape=image;verticalLabelPosition=bottom;labelBackgroundColor=none;imageBackgroundColor=none;imageBorder=none;image=https://www.gstatic.com/images/icons/material/system_gm/2x/person_gm_grey_48dp.png;imageWidth=36;imageHeight=36;fontSize=11;fontFamily=Google Sans;fontColor=#5F6368;" vertex="1" parent="1">
+          <mxGeometry x="60" y="80" width="50" height="55" as="geometry" />
+        </mxCell>
+
+        <mxCell id="voice-label" value="Voice" style="text;fontSize=9;fontColor=#1A73E8;fontFamily=Google Sans;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="130" y="85" width="40" height="14" as="geometry" />
+        </mxCell>
+        <mxCell id="text-label" value="Text" style="text;fontSize=9;fontColor=#E65100;fontFamily=Google Sans;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="130" y="110" width="40" height="14" as="geometry" />
+        </mxCell>
+
+        <!-- ══════════════════════════════════════ -->
+        <!-- ROW 2: CHROME EXTENSION -->
+        <!-- ══════════════════════════════════════ -->
+        <mxCell id="ext-box" value="" style="rounded=1;whiteSpace=wrap;fillColor=#E8F0FE;strokeColor=#4285F4;strokeWidth=2;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="190" y="65" width="500" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="ext-title" value="Chrome Extension (MV3)" style="text;html=1;align=left;fontSize=12;fontStyle=1;fontColor=#1A73E8;fontFamily=Google Sans;" vertex="1" parent="1">
+          <mxGeometry x="205" y="72" width="220" height="18" as="geometry" />
+        </mxCell>
+
+        <!-- Side Panel -->
+        <mxCell id="sidepanel" value="Side Panel" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DADCE0;fontSize=10;fontStyle=1;fontFamily=Google Sans;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="210" y="98" width="90" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="sp-sub" value="Voice UI&#xa;Dashboard&#xa;Task Input" style="text;fontSize=8;fontColor=#5F6368;fontFamily=Google Sans;align=center;" vertex="1" parent="1">
+          <mxGeometry x="212" y="105" width="86" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- Service Worker -->
+        <mxCell id="sw" value="Service Worker" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DADCE0;fontSize=10;fontStyle=1;fontFamily=Google Sans;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="320" y="98" width="110" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="sw-sub" value="GeminiLiveClient&#xa;Message Router&#xa;Auth (OAuth)" style="text;fontSize=8;fontColor=#5F6368;fontFamily=Google Sans;align=center;" vertex="1" parent="1">
+          <mxGeometry x="322" y="105" width="106" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- Content Script -->
+        <mxCell id="cs" value="Content Script" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DADCE0;fontSize=10;fontStyle=1;fontFamily=Google Sans;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="450" y="98" width="105" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="cs-sub" value="DOM Actions&#xa;Screenshots&#xa;Overlays" style="text;fontSize=8;fontColor=#5F6368;fontFamily=Google Sans;align=center;" vertex="1" parent="1">
+          <mxGeometry x="452" y="105" width="101" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- Mic + Personas -->
+        <mxCell id="mic" value="Mic Capture&#xa;(AudioWorklet)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DADCE0;fontSize=8;fontFamily=Google Sans;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="575" y="98" width="95" height="35" as="geometry" />
+        </mxCell>
+        <mxCell id="personas" value="8 AI Personas" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE8E6;strokeColor=#C5221F;fontSize=8;fontStyle=1;fontFamily=Google Sans;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="575" y="140" width="95" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- Playback + Analytics inside ext -->
+        <mxCell id="playback" value="Audio Playback (24kHz gapless)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F4EA;strokeColor=#34A853;fontSize=7;fontFamily=Google Sans;" vertex="1" parent="1">
+          <mxGeometry x="210" y="165" width="145" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="analytics" value="Conversation Analytics (XP, Skills, Streaks)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEF7E0;strokeColor=#F9AB00;fontSize=7;fontFamily=Google Sans;" vertex="1" parent="1">
+          <mxGeometry x="365" y="165" width="195" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="transcript" value="Live Transcript" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F4EA;strokeColor=#34A853;fontSize=7;fontFamily=Google Sans;" vertex="1" parent="1">
+          <mxGeometry x="570" y="165" width="105" height="20" as="geometry" />
+        </mxCell>
+
+        <!-- ══════════════════════════════════════ -->
+        <!-- ROW 3: BACKEND -->
+        <!-- ══════════════════════════════════════ -->
+        <mxCell id="backend-box" value="" style="rounded=1;whiteSpace=wrap;fillColor=#FEF7E0;strokeColor=#F9AB00;strokeWidth=2;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="190" y="280" width="500" height="170" as="geometry" />
+        </mxCell>
+        <mxCell id="backend-title" value="Python Backend (FastAPI)" style="text;html=1;align=left;fontSize=12;fontStyle=1;fontColor=#E37400;fontFamily=Google Sans;" vertex="1" parent="1">
+          <mxGeometry x="205" y="287" width="250" height="18" as="geometry" />
+        </mxCell>
+
+        <mxCell id="api-server" value="FastAPI&#xa;WebSocket + REST" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DADCE0;fontSize=9;fontStyle=1;fontFamily=Google Sans;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="210" y="315" width="110" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="agents" value="Multi-Agent System&#xa;Orchestrator → FastLoop&#xa;Planner → Researcher" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DADCE0;fontSize=8;fontFamily=Google Sans;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="335" y="315" width="145" height="45" as="geometry" />
+        </mxCell>
+
+        <mxCell id="toolbox" value="Tool Executor&#xa;12 browser tools" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DADCE0;fontSize=9;fontStyle=1;fontFamily=Google Sans;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="495" y="315" width="100" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="connectors" value="9 Connectors | 34 Skills (Calendar, Gmail, Drive, Docs, Sheets, Meet, YouTube)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DADCE0;fontSize=7;fontFamily=Google Sans;" vertex="1" parent="1">
+          <mxGeometry x="210" y="370" width="385" height="22" as="geometry" />
+        </mxCell>
+
+        <mxCell id="policy-mem" value="Policy Engine | Memory Store | UI Graphs | Doc Generator" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DADCE0;fontSize=7;fontFamily=Google Sans;" vertex="1" parent="1">
+          <mxGeometry x="210" y="400" width="385" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="session-analysis" value="Session Analysis&#xa;(Skills + XP)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DADCE0;fontSize=8;fontFamily=Google Sans;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="605" y="370" width="75" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- ══════════════════════════════════════ -->
+        <!-- ROW 4: EXTERNAL SERVICES -->
+        <!-- ══════════════════════════════════════ -->
+
+        <!-- Gemini APIs -->
+        <mxCell id="gemini-box" value="" style="rounded=1;whiteSpace=wrap;fillColor=#E6F4EA;strokeColor=#34A853;strokeWidth=2;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="760" y="65" width="280" height="230" as="geometry" />
+        </mxCell>
+        <mxCell id="gemini-title" value="Gemini APIs" style="text;html=1;align=left;fontSize=12;fontStyle=1;fontColor=#0D652D;fontFamily=Google Sans;" vertex="1" parent="1">
+          <mxGeometry x="775" y="72" width="120" height="18" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g-live" value="Gemini Live API&#xa;(Native Audio)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CEEAD6;strokeColor=#34A853;fontSize=10;fontStyle=1;fontFamily=Google Sans;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="780" y="100" width="240" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="g-live-sub" value="WSS bidirectional | PCM 16kHz↑ 24kHz↓ | Transcription | google_search" style="text;fontSize=7;fontColor=#5F6368;fontFamily=Google Sans;align=center;" vertex="1" parent="1">
+          <mxGeometry x="780" y="140" width="240" height="14" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g-flash" value="Gemini 2.5 Flash" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CEEAD6;strokeColor=#34A853;fontSize=10;fontStyle=1;fontFamily=Google Sans;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="780" y="165" width="115" height="35" as="geometry" />
+        </mxCell>
+        <mxCell id="g-flash-sub" value="Planning&#xa;Function calling&#xa;Analysis" style="text;fontSize=7;fontColor=#5F6368;fontFamily=Google Sans;align=center;" vertex="1" parent="1">
+          <mxGeometry x="782" y="170" width="111" height="28" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g-search" value="Google Search&#xa;(Grounding)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CEEAD6;strokeColor=#34A853;fontSize=9;fontStyle=1;fontFamily=Google Sans;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="905" y="165" width="115" height="35" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g-embed" value="text-embedding-004 (Memory Retrieval)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CEEAD6;strokeColor=#34A853;fontSize=8;fontFamily=Google Sans;" vertex="1" parent="1">
+          <mxGeometry x="780" y="210" width="240" height="22" as="geometry" />
+        </mxCell>
+
+        <mxCell id="g-vision" value="Gemini Vision (Screenshot Understanding)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CEEAD6;strokeColor=#34A853;fontSize=8;fontFamily=Google Sans;" vertex="1" parent="1">
+          <mxGeometry x="780" y="240" width="240" height="22" as="geometry" />
+        </mxCell>
+
+        <!-- Google Cloud -->
+        <mxCell id="gcp-box" value="" style="rounded=1;whiteSpace=wrap;fillColor=#E8EAED;strokeColor=#5F6368;strokeWidth=2;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="760" y="310" width="280" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="gcp-title" value="Google Cloud" style="text;html=1;align=left;fontSize=12;fontStyle=1;fontColor=#3C4043;fontFamily=Google Sans;" vertex="1" parent="1">
+          <mxGeometry x="775" y="317" width="130" height="18" as="geometry" />
+        </mxCell>
+
+        <mxCell id="gcp-run" value="Cloud Run" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DADCE0;fontSize=9;fontStyle=1;fontFamily=Google Sans;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="780" y="345" width="80" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="gcp-secret" value="Secret&#xa;Manager" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DADCE0;fontSize=9;fontStyle=1;fontFamily=Google Sans;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="870" y="345" width="75" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="gcp-build" value="Cloud&#xa;Build" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DADCE0;fontSize=9;fontStyle=1;fontFamily=Google Sans;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="955" y="345" width="65" height="30" as="geometry" />
+        </mxCell>
+
+        <mxCell id="gcp-tf" value="Terraform (IaC)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DADCE0;fontSize=8;fontFamily=Google Sans;" vertex="1" parent="1">
+          <mxGeometry x="780" y="385" width="90" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="gcp-deploy" value="deploy.sh (CI/CD)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DADCE0;fontSize=8;fontFamily=Google Sans;" vertex="1" parent="1">
+          <mxGeometry x="880" y="385" width="100" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="gcp-oauth" value="OAuth2 Token (/api/v) — short-lived, 60min" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEF7E0;strokeColor=#F9AB00;fontSize=7;fontStyle=1;fontFamily=Google Sans;" vertex="1" parent="1">
+          <mxGeometry x="780" y="415" width="240" height="18" as="geometry" />
+        </mxCell>
+
+        <!-- ══════════════════════════════════════ -->
+        <!-- ARROWS -->
+        <!-- ══════════════════════════════════════ -->
+
+        <!-- User → Extension -->
+        <mxCell id="a0" style="rounded=1;strokeColor=#5F6368;strokeWidth=1.5;endArrow=block;" edge="1" source="user" target="sidepanel" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- VOICE PATH (Blue) — Extension → Gemini Live -->
+        <mxCell id="a1" value="WSS Direct" style="rounded=1;strokeColor=#1A73E8;strokeWidth=2.5;endArrow=block;startArrow=block;fontSize=8;fontStyle=1;fontFamily=Google Sans;fontColor=#1A73E8;labelBackgroundColor=#E8F0FE;" edge="1" source="sw" target="g-live" parent="1">
+          <mxGeometry x="0.1" relative="1" as="geometry">
+            <mxPoint as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- TASK PATH (Orange) — Extension → Backend -->
+        <mxCell id="a2" value="WebSocket" style="rounded=1;strokeColor=#E65100;strokeWidth=2;endArrow=block;startArrow=block;fontSize=8;fontStyle=1;fontFamily=Google Sans;fontColor=#E65100;labelBackgroundColor=#FEF7E0;" edge="1" source="sw" target="api-server" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Backend → Gemini Flash -->
+        <mxCell id="a3" value="API" style="rounded=1;strokeColor=#34A853;strokeWidth=1.5;endArrow=block;fontSize=8;fontFamily=Google Sans;fontColor=#34A853;labelBackgroundColor=#E6F4EA;" edge="1" source="agents" target="g-flash" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Backend → Cloud Run -->
+        <mxCell id="a4" style="rounded=1;strokeColor=#5F6368;strokeWidth=1;endArrow=block;dashed=1;" edge="1" source="api-server" target="gcp-run" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Content Script ↔ Browser tab -->
+        <mxCell id="a5" value="DOM" style="rounded=1;strokeColor=#E65100;strokeWidth=1.5;endArrow=block;startArrow=block;fontSize=7;fontFamily=Google Sans;fontColor=#E65100;" edge="1" source="cs" target="toolbox" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="630" y="155" />
+              <mxPoint x="630" y="245" />
+              <mxPoint x="545" y="245" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- Mic → Service Worker -->
+        <mxCell id="a6" value="Port" style="rounded=1;strokeColor=#1A73E8;strokeWidth=1.5;endArrow=block;fontSize=7;fontFamily=Google Sans;fontColor=#1A73E8;" edge="1" source="mic" target="sw" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Secret Manager → OAuth Token → Extension -->
+        <mxCell id="a7" style="rounded=1;strokeColor=#F9AB00;strokeWidth=1.5;endArrow=block;dashed=1;" edge="1" source="gcp-oauth" target="sw" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1060" y="424" />
+              <mxPoint x="1060" y="495" />
+              <mxPoint x="375" y="495" />
+              <mxPoint x="375" y="160" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ══════════════════════════════════════ -->
+        <!-- LEGEND -->
+        <!-- ══════════════════════════════════════ -->
+        <mxCell id="leg-box" value="" style="rounded=1;whiteSpace=wrap;fillColor=#FFFFFF;strokeColor=#DADCE0;arcSize=12;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="190" y="510" width="500" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="leg1-line" value="" style="endArrow=block;strokeColor=#1A73E8;strokeWidth=2.5;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="205" y="528" as="sourcePoint" /><mxPoint x="235" y="528" as="targetPoint" /></mxGeometry>
+        </mxCell>
+        <mxCell id="leg1" value="Voice Path — Mic → Extension → Gemini Live (direct WSS, zero latency)" style="text;fontSize=8;fontColor=#1A73E8;fontFamily=Google Sans;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="240" y="522" width="420" height="12" as="geometry" />
+        </mxCell>
+
+        <mxCell id="leg2-line" value="" style="endArrow=block;strokeColor=#E65100;strokeWidth=2;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="205" y="545" as="sourcePoint" /><mxPoint x="235" y="545" as="targetPoint" /></mxGeometry>
+        </mxCell>
+        <mxCell id="leg2" value="Task Path — Input → Backend → Multi-Agent → Tools → Browser" style="text;fontSize=8;fontColor=#E65100;fontFamily=Google Sans;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="240" y="539" width="420" height="12" as="geometry" />
+        </mxCell>
+
+        <mxCell id="leg3-line" value="" style="endArrow=block;strokeColor=#F9AB00;strokeWidth=1.5;dashed=1;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="205" y="560" as="sourcePoint" /><mxPoint x="235" y="560" as="targetPoint" /></mxGeometry>
+        </mxCell>
+        <mxCell id="leg3" value="Auth — Secret Manager → OAuth Token (60min) → Extension → Gemini" style="text;fontSize=8;fontColor=#F9AB00;fontFamily=Google Sans;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="240" y="554" width="420" height="12" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
