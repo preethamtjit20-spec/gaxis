@@ -11,7 +11,7 @@
 // Docs are created server-side as .docx files (no OAuth needed)
 
 import { MSG, DEFAULT_SETTINGS } from "../shared/types.js";
-import { GeminiLiveClient, PERSONAS, setApiKey } from "./gemini-live.js";
+import { GeminiLiveClient, PERSONAS, setAuth } from "./gemini-live.js";
 
 let ws = null;
 let wsReconnectTimer = null;
@@ -891,12 +891,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
       }
       const persona = message.persona || "friend";
-      // Fetch key from backend (one-time, key never stored in extension)
+      // Fetch short-lived token from backend (never stored permanently)
       try {
         const r = await fetch(`${settings.backendUrl}/api/v`);
         const d = await r.json();
-        if (!d.k) throw new Error("No key");
-        setApiKey(d.k);
+        if (!d.token) throw new Error("No token");
+        setAuth(d.token, d.type);
       } catch {
         safeBroadcast({ type: MSG.LIVE_STATUS, data: { status: "error", message: "Cannot connect to backend" } });
         sendResponse({ ok: false });

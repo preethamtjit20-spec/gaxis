@@ -92,9 +92,33 @@ async def broadcast_event(event: TaskEvent) -> None:
 # ─── WEBSOCKET ENDPOINT ──────────────────────────────────────
 
 @app.get("/api/v")
-async def get_voice_config():
-    """One-time key fetch for voice sessions."""
-    return JSONResponse({"k": os.environ.get("GOOGLE_API_KEY", "")})
+async def get_voice_token():
+    """Generate a short-lived access token for Gemini Live voice sessions.
+
+    Uses Google OAuth2 access token instead of raw API key.
+    Token expires in ~60 minutes. Much safer than exposing the API key.
+    """
+    import google.auth
+    import google.auth.transport.requests
+
+    try:
+        credentials, project = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/generative-language"]
+        )
+        credentials.refresh(google.auth.transport.requests.Request())
+        return JSONResponse({
+            "token": credentials.token,
+            "type": "oauth",
+        })
+    except Exception:
+        # Fallback to API key if OAuth not available (local dev)
+        api_key = os.environ.get("GOOGLE_API_KEY", "")
+        if api_key:
+            return JSONResponse({
+                "token": api_key,
+                "type": "api_key",
+            })
+        return JSONResponse({"error": "No credentials available"}, status_code=500)
 
 
 @app.websocket("/ws")

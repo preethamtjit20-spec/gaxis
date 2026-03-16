@@ -3,9 +3,10 @@
  * No backend hop — connects from extension service worker directly to Gemini.
  */
 
-const GEMINI_WS_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
+const GEMINI_WS_BASE = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 const LIVE_MODEL = "models/gemini-2.5-flash-native-audio-preview-12-2025";
-let GEMINI_API_KEY = "";
+let _authToken = "";
+let _authType = "api_key"; // "api_key" or "oauth"
 
 const PERSONAS = {
   friend: {
@@ -133,7 +134,6 @@ Search the web for real-world details to make stories authentic.`,
 
 export class GeminiLiveClient {
   constructor(persona, callbacks) {
-    this._apiKey = GEMINI_API_KEY;
     this._persona = PERSONAS[persona] || PERSONAS.friend;
     this._ws = null;
     this._onAudioOut = callbacks.onAudioOut;
@@ -147,7 +147,11 @@ export class GeminiLiveClient {
   }
 
   start() {
-    const url = `${GEMINI_WS_URL}?key=${this._apiKey}`;
+    // OAuth: use access_token param. API key: use key param.
+    const authParam = _authType === "oauth"
+      ? `access_token=${_authToken}`
+      : `key=${_authToken}`;
+    const url = `${GEMINI_WS_BASE}?${authParam}`;
     this._ws = new WebSocket(url);
 
     this._ws.onopen = () => {
@@ -278,6 +282,9 @@ export class GeminiLiveClient {
   }
 }
 
-export function setApiKey(key) { GEMINI_API_KEY = key; }
+export function setAuth(token, type) {
+  _authToken = token;
+  _authType = type || "api_key";
+}
 export { PERSONAS };
 
