@@ -800,6 +800,8 @@ function handleBackendMessage(msg) {
 
 // Side Panel / Content Script -> Background -> Backend
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Wrap in async handler — Chrome MV3 service workers require this pattern
+  const handleAsync = async () => {
   // ── Guard: reject content-script messages from non-workspace tabs ──
   // Side panel messages have no sender.tab; content scripts do.
   // Only process content script messages from tabs in our workspace.
@@ -885,13 +887,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     // ── Live Audio passthrough ──
     case MSG.LIVE_START: {
-      // Direct Gemini Live connection — no backend hop
       if (geminiLive?.isActive) {
         sendResponse({ ok: true });
         break;
       }
       const persona = message.persona || "friend";
-      // Fetch short-lived token from backend (never stored permanently)
       try {
         const r = await fetch(`${settings.backendUrl}/api/v`);
         const d = await r.json();
@@ -1038,6 +1038,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     default:
       sendResponse({ error: "Unknown message type" });
   }
+  }; // end handleAsync
+  handleAsync();
+  return true; // Keep sendResponse channel open for async
 });
 
 // ─── CDP TYPING (for Google Docs and other canvas-based editors) ──────

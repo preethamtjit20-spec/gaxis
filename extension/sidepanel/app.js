@@ -394,7 +394,7 @@ function closeSettings() {
 }
 
 function populateSettings(settings) {
-  settingEls.backendUrl.value = settings.backendUrl || "http://localhost:8000";
+  settingEls.backendUrl.value = settings.backendUrl || "https://gaxis-132388856648.us-central1.run.app";
   settingEls.model.value = settings.model || "gemini-2.5-flash";
   settingEls.temperature.value = settings.temperature ?? 0.2;
   settingEls.temperatureValue.textContent = settings.temperature ?? 0.2;
@@ -2479,15 +2479,15 @@ async function startLiveSession() {
 
     // Save current session before switching
     const durationSecs = Math.round((Date.now() - (window._voiceSessionStart || Date.now())) / 1000);
-    if (voiceTranscriptHistory.length >= 4) {
+    if (voiceTranscriptHistory.length >= 2) {
       const prevPersona = window._currentPersona || "friend";
       let markdown = "";
       for (const entry of voiceTranscriptHistory) {
         const label = entry.role === "user" ? "**You**" : "**G-Axis**";
         markdown += `${label}: ${entry.text}\n\n`;
       }
-      // Fire and forget — don't block switch
-      fetch("http://localhost:8000/api/analyze-session", {
+      // Analyze before switching
+      await fetch("https://gaxis-132388856648.us-central1.run.app/api/analyze-session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2829,8 +2829,8 @@ async function endVoiceSession() {
   els.welcomeSection.classList.remove("hidden");
 
   // Analyze if conversation was substantive
-  const MIN_TURNS = 4;
-  const MIN_TOTAL_CHARS = 100;
+  const MIN_TURNS = 2;
+  const MIN_TOTAL_CHARS = 30;
 
   if (voiceTranscriptHistory.length >= MIN_TURNS) {
     const totalChars = voiceTranscriptHistory.reduce((sum, e) => sum + (e.text?.length || 0), 0);
@@ -2844,7 +2844,7 @@ async function endVoiceSession() {
         }
 
         // Analyze session — skills, XP, insights
-        const analyzeResp = await fetch(`http://localhost:8000/api/analyze-session`, {
+        const analyzeResp = await fetch(`https://gaxis-132388856648.us-central1.run.app/api/analyze-session`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -2867,7 +2867,7 @@ async function endVoiceSession() {
         }
 
         // Save transcript as .docx
-        const resp = await fetch(`http://localhost:8000/api/save-transcript`, {
+        const resp = await fetch(`https://gaxis-132388856648.us-central1.run.app/api/save-transcript`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ title, content: markdown }),
@@ -2976,7 +2976,7 @@ async function openDashboard() {
   els.dashboardSection.classList.remove("hidden");
 
   try {
-    const resp = await fetch(`http://localhost:8000/api/dashboard`);
+    const resp = await fetch(`https://gaxis-132388856648.us-central1.run.app/api/dashboard`);
     if (!resp.ok) return;
     const data = await resp.json();
     const stats = data.stats || {};
@@ -3068,7 +3068,7 @@ async function openDashboard() {
               <span class="dash-recent-persona">${s.persona || "friend"}</span>
               <span class="dash-recent-meta">${mins}min</span>
             </div>
-            <div class="dash-recent-summary">${s.summary || s.topics?.join(", ") || "Conversation"}</div>
+            <div class="dash-recent-summary">${s.summary || (s.topics?.length ? s.topics.join(", ") : `${s.message_count || 0} messages with ${s.persona || "friend"}`)}</div>
             ${skillTags ? `<div class="dash-recent-skills">${skillTags}</div>` : ""}
           </div>`;
         }).join("");
