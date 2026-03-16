@@ -65,10 +65,14 @@ app = FastAPI(title="G-Axis", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[
+        "chrome-extension://*",
+        "http://localhost:8000",
+        "https://gaxis-132388856648.us-central1.run.app",
+    ],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
 
 
@@ -93,10 +97,9 @@ async def broadcast_event(event: TaskEvent) -> None:
 
 @app.get("/api/v")
 async def get_voice_token():
-    """Generate a short-lived access token for Gemini Live voice sessions.
+    """Generate a short-lived OAuth2 access token for voice sessions.
 
-    Uses Google OAuth2 access token instead of raw API key.
-    Token expires in ~60 minutes. Much safer than exposing the API key.
+    Never exposes the raw API key. Token expires in ~60 minutes.
     """
     import google.auth
     import google.auth.transport.requests
@@ -110,15 +113,9 @@ async def get_voice_token():
             "token": credentials.token,
             "type": "oauth",
         })
-    except Exception:
-        # Fallback to API key if OAuth not available (local dev)
-        api_key = os.environ.get("GOOGLE_API_KEY", "")
-        if api_key:
-            return JSONResponse({
-                "token": api_key,
-                "type": "api_key",
-            })
-        return JSONResponse({"error": "No credentials available"}, status_code=500)
+    except Exception as e:
+        logger.error(f"OAuth token generation failed: {e}")
+        return JSONResponse({"error": "Authentication failed"}, status_code=500)
 
 
 @app.websocket("/ws")
@@ -628,8 +625,13 @@ async def list_replays():
 @app.get("/api/doc/{filename}")
 async def download_doc(filename: str):
     """Download a generated .docx research document."""
-    filepath = os.path.join("research-docs", filename)
-    if not os.path.exists(filepath):
+    from pathlib import Path
+    # Prevent path traversal — ensure file is within research-docs
+    safe_name = Path(filename).name  # Strip any directory components
+    filepath = Path("research-docs") / safe_name
+    if not filepath.resolve().is_relative_to(Path("research-docs").resolve()):
+        return JSONResponse({"error": "Invalid filename"}, status_code=400)
+    if not filepath.exists():
         return JSONResponse({"error": "Document not found"}, status_code=404)
     return FileResponse(
         filepath,
