@@ -29,20 +29,22 @@ provider "google" {
   region  = var.region
 }
 
-# Enable required APIs
+# ─── Enable Required APIs ───────────────────────────────
+
 resource "google_project_service" "apis" {
   for_each = toset([
     "run.googleapis.com",
     "cloudbuild.googleapis.com",
-    "firestore.googleapis.com",
     "secretmanager.googleapis.com",
     "artifactregistry.googleapis.com",
+    "cloudscheduler.googleapis.com",
   ])
   service            = each.value
   disable_on_destroy = false
 }
 
-# Secret for Gemini API key
+# ─── Secrets ────────────────────────────────────────────
+
 resource "google_secret_manager_secret" "gemini_key" {
   secret_id = "gaxis-gemini-key"
   replication {
@@ -56,15 +58,8 @@ resource "google_secret_manager_secret_version" "gemini_key_version" {
   secret_data = var.gemini_api_key
 }
 
-# Firestore database
-resource "google_firestore_database" "default" {
-  name        = "(default)"
-  location_id = var.region
-  type        = "FIRESTORE_NATIVE"
-  depends_on  = [google_project_service.apis]
-}
+# ─── Cloud Run Service ──────────────────────────────────
 
-# Cloud Run service
 resource "google_cloud_run_v2_service" "gaxis" {
   name     = "gaxis"
   location = var.region
@@ -101,6 +96,17 @@ resource "google_cloud_run_v2_service" "gaxis" {
       ports {
         container_port = 8080
       }
+
+      # Mount analytics volume for session persistence
+      volume_mounts {
+        name       = "analytics-data"
+        mount_path = "/app/.analytics"
+      }
+    }
+
+    volumes {
+      name = "analytics-data"
+      empty_dir {}
     }
 
     scaling {
@@ -117,7 +123,8 @@ resource "google_cloud_run_v2_service" "gaxis" {
   ]
 }
 
-# Allow unauthenticated access
+# ─── Public Access ──────────────────────────────────────
+
 resource "google_cloud_run_v2_service_iam_member" "public" {
   name     = google_cloud_run_v2_service.gaxis.name
   location = var.region
@@ -125,6 +132,52 @@ resource "google_cloud_run_v2_service_iam_member" "public" {
   member   = "allUsers"
 }
 
+# ─── Scheduled Jobs (Analytics) ─────────────────────────
+
+# Daily analysis job — runs at midnight UTC
+resource "google_cloud_scheduler_job" "daily_analysis" {
+  name      = "gaxis-daily-analysis"
+  schedule  = "0 0 * * *"
+  time_zone = "UTC"
+
+  http_target {
+    uri         = "${google_cloud_run_v2_service.gaxis.uri}/api/run-daily-analysis"
+    http_method = "POST"
+
+    oidc_token {
+      service_account_email = google_cloud_run_v2_service.gaxis.template[0].service_account
+    }
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+# Weekly report job — runs Sunday 11 PM UTC
+resource "google_cloud_scheduler_job" "weekly_report" {
+  name      = "gaxis-weekly-report"
+  schedule  = "0 23 * * 0"
+  time_zone = "UTC"
+
+  http_target {
+    uri         = "${google_cloud_run_v2_service.gaxis.uri}/api/run-weekly-report"
+    http_method = "POST"
+
+    oidc_token {
+      service_account_email = google_cloud_run_v2_service.gaxis.template[0].service_account
+    }
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+# ─── Outputs ────────────────────────────────────────────
+
 output "service_url" {
-  value = google_cloud_run_v2_service.gaxis.uri
+  value       = google_cloud_run_v2_service.gaxis.uri
+  description = "G-Axis backend URL"
+}
+
+output "health_url" {
+  value       = "${google_cloud_run_v2_service.gaxis.uri}/health"
+  description = "Health check endpoint"
 }
