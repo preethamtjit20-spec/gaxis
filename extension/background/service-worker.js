@@ -667,109 +667,27 @@ function handleBackendMessage(msg) {
     }
   }
 
-  // Research complete — close search tab → upload .docx → open formatted doc → rename
+  // Research complete — close search tab and open doc download
   if (msg.type === "research_complete" && msg.data?.download_url) {
     (async () => {
-      try {
-        const title = msg.data.title || "Research Document";
-        let downloadUrl = msg.data.download_url;
-        if (downloadUrl && downloadUrl.startsWith("/")) {
-          downloadUrl = settings.backendUrl + downloadUrl;
-        }
-
-        // 1. Close the search/scanning tab
-        if (agentTabId != null && agentTabId !== originalTabId) {
-          try {
-            await chrome.tabs.remove(agentTabId);
-            workspaceTabs.delete(agentTabId);
-            console.log("[G-Axis] Closed search tab:", agentTabId);
-            agentTabId = originalTabId;
-          } catch (_) {}
-        }
-
-        // 2. Get OAuth token
-        const token = await new Promise((resolve, reject) => {
-          chrome.identity.getAuthToken({ interactive: true }, (t) => {
-            if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-            else resolve(t);
-          });
-        });
-
-        // 3. Fetch the .docx from backend
-        const docxResponse = await fetch(downloadUrl);
-        const docxBlob = await docxResponse.blob();
-        console.log("[G-Axis] Fetched .docx:", docxBlob.size, "bytes");
-
-        // 4. Upload to Google Drive as Google Doc
-        const metadata = JSON.stringify({
-          name: title,
-          mimeType: "application/vnd.google-apps.document",
-        });
-        const form = new FormData();
-        form.append("metadata", new Blob([metadata], { type: "application/json" }));
-        form.append("file", docxBlob);
-
-        const uploadRes = await fetch(
-          "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&convert=true",
-          {
-            method: "POST",
-            headers: { Authorization: `Bearer ${token}` },
-            body: form,
-          }
-        );
-
-        if (!uploadRes.ok) throw new Error(`Drive upload failed: ${uploadRes.status}`);
-
-        const file = await uploadRes.json();
-        const docUrl = `https://docs.google.com/document/d/${file.id}/edit`;
-        console.log("[G-Axis] Google Doc created:", docUrl);
-
-        // 5. Open formatted doc in workspace tab
-        const docTab = await openWorkspaceTab(docUrl);
-
-        // 6. Wait for doc to load, then rename title autonomously
-        if (docTab?.id) {
-          agentTabId = docTab.id;
-          chrome.tabs.onUpdated.addListener(function listener(tabId, info) {
-            if (tabId === docTab.id && info.status === "complete") {
-              chrome.tabs.onUpdated.removeListener(listener);
-              setTimeout(async () => {
-                try {
-                  await chrome.scripting.executeScript({
-                    target: { tabId: docTab.id },
-                    func: (docTitle) => {
-                      // Click the title input and rename
-                      const titleInput = document.querySelector('input.docs-title-input');
-                      if (titleInput) {
-                        titleInput.value = docTitle;
-                        titleInput.dispatchEvent(new Event("input", { bubbles: true }));
-                        titleInput.dispatchEvent(new Event("change", { bubbles: true }));
-                        // Also try direct focus + key events
-                        titleInput.focus();
-                        titleInput.select();
-                        document.execCommand("insertText", false, docTitle);
-                        titleInput.blur();
-                      }
-                    },
-                    args: [title],
-                  });
-                  console.log("[G-Axis] Renamed doc to:", title);
-                } catch (err) {
-                  console.error("[G-Axis] Rename failed:", err.message);
-                }
-              }, 3000);
-            }
-          });
-        }
-
-      } catch (err) {
-        console.error("[G-Axis] Doc upload failed:", err);
+      // Close the search/scanning tab
+      if (agentTabId != null && agentTabId !== originalTabId) {
         try {
-          let fallbackUrl = msg.data.download_url;
-          if (fallbackUrl && fallbackUrl.startsWith("/")) fallbackUrl = settings.backendUrl + fallbackUrl;
-          chrome.tabs.create({ url: fallbackUrl, active: true });
+          await chrome.tabs.remove(agentTabId);
+          workspaceTabs.delete(agentTabId);
+          agentTabId = originalTabId;
         } catch (_) {}
       }
+
+      // Open the doc download URL directly
+      let downloadUrl = msg.data.download_url;
+      if (downloadUrl && downloadUrl.startsWith("/")) {
+        downloadUrl = settings.backendUrl + downloadUrl;
+      }
+      try {
+        chrome.tabs.create({ url: downloadUrl, active: true });
+        console.log("[G-Axis] Opening doc:", downloadUrl);
+      } catch (_) {}
     })();
   }
 

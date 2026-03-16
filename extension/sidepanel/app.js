@@ -1177,9 +1177,14 @@ function handleMessage(msg) {
       showUserInputPrompt(msg.data?.message || "How would you like me to handle this?");
       break;
 
-    case MSG.ERROR:
-      addTimelineEntry("error", "Error", msg.data?.message || "Unknown error", null, null, "error");
+    case MSG.ERROR: {
+      const errMsg = msg.data?.message || "";
+      // Skip transient/unknown errors that auto-recover
+      if (errMsg && errMsg !== "Unknown error") {
+        addTimelineEntry("error", "Error", errMsg, null, null, "error");
+      }
       break;
+    }
 
     case MSG.RESEARCH_COMPLETE: {
       const md = msg.data?.markdown || "";
