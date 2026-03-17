@@ -2,136 +2,126 @@
 
 ## Inspiration
 
-I was tired of the tab-switching dance. ChatGPT in one tab, Google Calendar in another, research in a third — six tabs open just to plan a single meeting. Every AI tool lives in its own silo, disconnected from where the actual work happens: the browser.
+I kept catching myself with six tabs open just to plan one meeting. ChatGPT in one tab, Calendar in another, three Google searches running. Every AI tool lives in its own world, completely disconnected from where I actually do my work: the browser.
 
-Then I thought — what if the browser itself was intelligent? Not a new browser, not another chatbot, but something that lives inside Chrome, sees what I see, talks like a friend, and actually does things for me. That's how G-Axis was born.
+So I started thinking, what if the browser itself could think? Not some new app I have to download. Not another chatbot in another tab. Something that just lives inside Chrome, sees what I see, and can actually do things when I ask.
 
-The Gemini Live Agent Challenge was the perfect catalyst. Gemini's Live API offered something no other model had — real-time, bidirectional native audio. Not text-to-speech. Actual voice conversation. I wanted to build something that felt like having a smart friend sitting next to you while you browse.
+When the Gemini Live Agent Challenge dropped, it clicked. Gemini's Live API does something nobody else does: real time, two way voice. Not text to speech. Actual conversation. I wanted to build something that feels like having a smart friend sitting next to you while you work.
 
 ## What it does
 
-G-Axis is a Chrome extension with two core capabilities:
+G-Axis is a Chrome extension that does two things really well.
 
-**Voice AI Companion** — Click the mic and start talking. G-Axis connects directly to Gemini's Live API for real-time voice conversations. It has 8 AI personas — Friendly Buddy, Wise Mentor, Creative Partner, Chill Companion, Professional Coach, Job Interviewer, Friendly Debater, and Storyteller. Each has its own voice (Puck, Charon, Aoede, Kore, Fenrir) and personality. Switch personas mid-conversation seamlessly.
+**First, it talks.** Click the mic and just start speaking. G-Axis connects straight to Gemini's Live API for real time voice. I built 8 different AI personas: Friendly Buddy, Wise Mentor, Creative Partner, Chill Companion, Professional Coach, Job Interviewer, Friendly Debater, and Storyteller. Each one has its own voice and personality. You can switch between them mid conversation and it feels seamless.
 
-It uses Google Search for grounding — ask "What's happening with AI this week?" and it searches the web live, answering with current data, not stale training knowledge.
+It also searches the web while you talk. Ask "what's happening in AI this week?" and it actually goes and looks it up, giving you current data, not something from training.
 
-Every conversation is analyzed by Gemini for 5 communication skills — Confidence, Clarity, Engagement, Listening, and Pacing. Users earn XP, level up, and track daily streaks on an analytics dashboard.
+After every conversation, Gemini analyzes how you communicated across five dimensions: Confidence, Clarity, Engagement, Listening, and Pacing. You earn XP, level up, and track streaks on a dashboard. It turns casual voice chat into something that actually helps you grow.
 
-**Autonomous Browser Agent** — Type a task like "Plan a 5-day Japan itinerary" and G-Axis takes over. It opens a workspace tab, researches across multiple websites, synthesizes the information, and generates a downloadable .docx document. Type "Schedule a meeting tomorrow at 10am" and it opens Google Calendar, fills in the event details, and saves it.
-
-It uses Gemini Vision to understand screenshots, semantic UI graphs for Google Workspace apps, and a policy engine that requires approval before any risky action. You stay in control.
+**Second, it acts.** Type "plan a 5 day Japan itinerary" and watch it go. It opens tabs, researches across multiple sites, pulls everything together, and hands you a full document. Type "schedule a meeting tomorrow at 10am" and it opens Calendar, fills in the details, and saves the event. It sees pages through Gemini Vision and always asks before doing anything risky.
 
 ## How I built it
 
-**Built solo.**
+Built this one solo.
 
-### Gemini APIs Used
-- **Gemini Live API** (`gemini-2.5-flash-native-audio-preview`) — real-time bidirectional voice
-- **Gemini 2.5 Flash** — task planning, function calling, session analysis, intent classification
-- **Gemini Vision** — screenshot understanding for browser automation
-- **Google Search** (Grounding) — real-time web data in voice conversations
-- **text-embedding-004** — embedding-based memory retrieval
+### Gemini APIs I used
+- Gemini Live API (the native audio model) for real time voice
+- Gemini 2.5 Flash for planning tasks, calling functions, analyzing sessions
+- Gemini Vision for understanding what's on screen
+- Google Search grounding so conversations have real time web data
+- text-embedding-004 for the memory retrieval system
 
-### Google Cloud Services
-- **Cloud Run** — backend hosting (FastAPI, autoscaling)
-- **Secret Manager** — API key storage + OAuth2 token generation
-- **Cloud Build** — Docker image CI/CD
-- **Cloud Scheduler** — daily/weekly analytics jobs
-- **Terraform** — Infrastructure as Code
+### Google Cloud
+- Cloud Run hosts the backend
+- Secret Manager keeps the API key safe and generates OAuth tokens
+- Cloud Build handles Docker image creation
+- Cloud Scheduler runs daily and weekly analytics jobs
+- Terraform manages all the infrastructure as code
 
-### Architecture
+### The voice pipeline
 
-The system has three layers — a Chrome extension (Manifest V3) as the client, a Python/FastAPI backend on Cloud Run, and Gemini APIs as the intelligence layer.
+This was the hardest part to get right. Chrome sidepanels can't access the microphone directly, so I had to build a workaround. A tiny popup window opens, requests mic permission, captures audio through an AudioWorklet at 16kHz, and streams it through Chrome ports to the service worker. The service worker connects directly to Gemini Live over WebSocket. No backend in the middle. Audio comes back at 24kHz and plays through a scheduler I built that times each buffer to start at the exact moment the previous one ends. No gaps, no stuttering.
 
-**Voice Pipeline**: Chrome extension sidepanels can't access `getUserMedia`, so I built a minimal popup window with an AudioWorklet processor that captures PCM 16kHz audio, streams it via Chrome ports to the service worker, which connects directly to Gemini's Live API over WebSocket. Audio responses come back at 24kHz and play through a gapless scheduler — each buffer is timed to start exactly when the previous one ends, eliminating the stuttering that `onended` callbacks cause.
+### Personas
 
-**Persona System**: Each of the 8 personas is defined in `gemini-live.js` with a unique system prompt, voice name, and conversational style. The service worker creates a new `GeminiLiveClient` instance with the selected persona's config. Switching mid-conversation saves the current session for analysis, clears the transcript, and reconnects with the new persona.
+Each of the 8 personas lives in a single JS file with its own system prompt, voice selection, and conversation style. When you switch mid conversation, the current session gets saved and analyzed automatically, the transcript clears, and a fresh connection opens with the new persona's config.
 
-**Browser Automation**: The backend runs a multi-agent system — an Orchestrator delegates to a FastLoop (one Gemini call per action step), a Planner (conversational task planning), and a Researcher (multi-source web scanning). 12 browser tools (click, type, navigate, scroll, fill_form, etc.) execute via the content script. A Policy Engine scores risk and gates sensitive actions.
+### Browser automation
 
-**Analytics**: After each voice session, the transcript is sent to Gemini 2.5 Flash for analysis — intent classification, skill scoring, topic extraction, and summary generation. Results are stored locally with XP calculations, streak tracking, and a level system.
+The backend runs a multi agent system. An orchestrator hands tasks to a fast loop (one Gemini call per step), a planner (for complex multi step goals), or a researcher (scans multiple websites). Twelve browser tools handle the actual clicking, typing, scrolling, and form filling through the content script. A policy engine checks every action for risk and asks for your approval on anything sensitive.
 
-**Security**: The Gemini API key lives in Google Cloud Secret Manager. The backend generates short-lived OAuth2 access tokens (~60 minutes) via `/api/v`. The extension fetches a fresh token on each voice session — the key never touches client code, git, or network endpoints.
+### Security
 
-**Deployment**: Fully automated with a `deploy.sh` script and Terraform IaC (`terraform/main.tf`). Cloud Build creates Docker images, Cloud Run hosts the backend, and Cloud Scheduler triggers daily/weekly analytics jobs.
+The API key sits in Cloud Secret Manager. When the extension needs to start a voice session, it hits a backend endpoint that generates a short lived OAuth2 token (good for about 60 minutes). The actual key never touches the extension code, never shows up in git, never crosses the network as a raw credential.
+
+### Deployment
+
+One script does everything. Run `./deploy.sh` and it enables the APIs, creates the secrets, builds the Docker image through Cloud Build, and deploys to Cloud Run. Terraform manages all the resources. I can tear down and rebuild the entire infrastructure in minutes.
 
 ## Challenges I ran into
 
-### Blocker 1: Chrome Extension Mic Permission (6+ hours)
-`getUserMedia` throws `NotAllowedError` in sidepanels and offscreen documents. Tried 4 approaches — direct sidepanel, offscreen document, full tab, popup window. **Solution**: Minimal popup window with AudioWorklet that auto-requests permission and streams PCM audio via Chrome ports to the service worker.
+**The mic permission nightmare.** Spent over 6 hours on this. Chrome sidepanels can't show the browser's permission dialog. Offscreen documents can't either. I tried four completely different approaches before landing on the popup window method that finally worked.
 
-### Blocker 2: Gemini Live Session Dying After First Response (4+ hours)
-After Gemini responded once, the session would close silently. **Root cause**: Our client-side VAD was filtering silence, making Gemini think the user disconnected. **Solution**: Removed client-side VAD entirely. Send continuous audio — Gemini handles its own silence detection natively.
+**Sessions dying after one response.** This one was subtle. I had built voice activity detection on the client side to avoid sending silence. Turns out Gemini needs that continuous audio stream to know the session is still alive. The moment I stopped sending silence, Gemini thought I disconnected and killed the session. Removing my own VAD and letting Gemini handle silence detection fixed it instantly.
 
-### Blocker 3: 1008 "Operation Not Implemented" Crashes (3+ hours)
-Browser tool calls (click, navigate) during voice crashed with `1008 policy violation`. **Root cause**: The native audio model doesn't support custom function declarations. **Solution**: Separated voice (client-side, `google_search` only) from browser automation (server-side, full tool access).
+**The 1008 crashes.** Every time the voice model tried to call a browser tool (click, navigate, etc.), the whole session crashed with a policy violation error. Took me 3 hours to figure out that the native audio model simply doesn't support custom function calling. I had to split everything: voice runs client side with just Google Search, browser automation runs server side with the full tool set.
 
-### Blocker 4: Audio Playback Stuttering (2+ hours)
-Words skipping, choppy speech. **Root cause**: `onended` callbacks had 5-20ms gaps between chunks. **Solution**: Gapless scheduled playback — each `AudioBufferSource` starts at the exact nanosecond the previous one ends.
+**Choppy audio.** Words were getting cut off, speech sounded robotic. The issue was tiny gaps between audio chunks because I was waiting for each one to finish before starting the next. Switching to pre scheduled playback where each chunk is timed to start at the exact millisecond the previous one ends made everything smooth.
 
-### Blocker 5: Session Timeout After ~10 Minutes
-Gemini Live WebSocket closes after ~10 minutes. **Solution**: Transparent auto-reconnection up to 20 times. User sees brief "Extending session..." — conversations last 3+ hours.
+**10 minute timeout.** Gemini Live sessions just die after about 10 minutes. I built auto reconnection that handles this transparently. The user sees a quick "extending session" message and the conversation continues. Supports up to 20 reconnections so conversations can go for hours.
 
-### Blocker 6: API Key Exposed in Public Repo
-Key was hardcoded and pushed to GitHub. **Solution**: `git filter-branch` to scrub history, rotated the key, moved to OAuth2 flow — key stays in Secret Manager, extension gets 60-min tokens at runtime.
+**The API key incident.** I accidentally committed my Gemini key to the public repo. Had to scrub it from the entire git history with filter branch, rotate the key, and rebuild the whole auth flow around OAuth tokens. Learned that lesson the hard way.
 
-### Blocker 7: localhost URLs in Production
-After Cloud Run deployment, downloads pointed to `localhost:8000`. **Solution**: Changed all URLs to relative paths, resolved against `settings.backendUrl`.
+**Localhost URLs in production.** After deploying to Cloud Run, document downloads were still pointing to localhost:8000. Tracked down hardcoded URLs in three different files. Changed everything to relative paths that resolve against the backend URL from settings.
 
-### Blocker 8: Service Worker Registration Failed
-`await` inside sync `onMessage` listener broke MV3 module loading. **Solution**: Wrapped handler in async IIFE with `return true` for async response channel.
+**Service worker won't load.** Adding an await inside the message handler broke the service worker completely. Chrome's MV3 is strict about module syntax. Wrapped the handler in an async function and it worked.
 
-### Blocker 9: CORS Blocking Extension Requests
-`chrome-extension://*` isn't a valid CORS pattern. **Solution**: `allow_origins=["*"]` with `allow_credentials=False` — safe since auth uses OAuth tokens, not cookies.
+**CORS blocking everything.** Tightened CORS to chrome-extension://* and it broke because that's not a valid pattern. Chrome extensions don't send standard Origin headers from service worker fetch calls.
 
-### Blocker 10: Cloud Run File Persistence
-Generated `.docx` files disappeared between requests. **Root cause**: Ephemeral containers. **Solution**: `min-instances=1` to keep container warm.
+**Files disappearing on Cloud Run.** Generated documents would vanish between requests because containers are ephemeral. Set minimum instances to 1 so at least one container stays warm.
 
 ## Accomplishments that I'm proud of
 
-**Zero-latency voice** — Direct WebSocket from Chrome extension to Gemini Live (no backend proxy). Users can interrupt mid-sentence and the agent stops immediately.
+The voice feels genuinely real time. There's no noticeable delay between speaking and getting a response because the WebSocket goes directly from the extension to Gemini with nothing in between.
 
-**8 personas with live switching** — Switching from "Friendly Buddy" to "Job Interviewer" mid-conversation — hearing a completely different voice and personality — feels like magic. Previous session auto-saves and gets analyzed.
+Switching personas mid conversation and hearing a completely different voice and personality respond is honestly fun. Going from a casual buddy to a sharp job interviewer in one click and having the previous session automatically analyzed makes the whole thing feel polished.
 
-**The analytics dashboard** — Communication skills scored after every conversation, XP growth, streak tracking — turns voice chat from a novelty into a self-improvement tool.
+The analytics dashboard surprised me. Watching your communication skills get scored after every conversation and seeing your XP grow turns what could be a gimmick into something genuinely useful.
 
-**End-to-end cloud deployment** — One command (`./deploy.sh gaxis-488323`) deploys everything. Terraform manages all infrastructure. API key never touches client code.
-
-**Production-grade security** — OAuth2 short-lived tokens, Secret Manager, CORS restrictions, path traversal protection, git history scrubbed of all credentials.
+Getting the entire cloud deployment down to one command felt great. And knowing the API key is properly secured through OAuth tokens instead of hardcoded anywhere gives me confidence to share the repo publicly.
 
 ## What I learned
 
-**Gemini Live API is powerful but opinionated** — It handles VAD, turn-taking, and interruption natively. Fighting it (adding client-side VAD) causes problems. Working with its design (continuous audio, let it manage silence) produces natural conversations.
+Gemini's Live API works best when you stop fighting it. It handles voice detection, turn taking, and interruptions on its own. Every time I tried to add my own logic on top (like client side silence filtering), things broke. Working with its design instead of against it made everything smoother.
 
-**Chrome extension APIs have surprising gaps** — MV3 service workers can't show permission dialogs, sidepanels can't access getUserMedia, offscreen documents have limited capabilities. Building voice-enabled extensions requires creative workarounds.
+Chrome extensions in MV3 have real limitations that aren't obvious until you hit them. Service workers can't show dialogs, sidepanels can't access the mic, offscreen documents have restrictions. Building something voice powered in this environment requires a lot of creative problem solving.
 
-**Audio engineering matters** — The difference between choppy speech (onended callbacks) and smooth speech (scheduled playback) is subtle in code but massive in user experience.
+The difference between bad audio and good audio is tiny in the code but enormous in the experience. One line change from callback based playback to scheduled playback transformed the entire feel of the voice feature.
 
-**Personas transform the experience** — A generic chatbot feels like a tool. A "Friendly Buddy" with a casual voice feels like a friend. A "Job Interviewer" with a professional tone feels like genuine practice. Simple technically, transformative for engagement.
+Personas are simple to build but completely change how the product feels. A generic AI sounds like a tool. A "Friendly Buddy" with a warm voice sounds like a friend. The technical complexity is minimal but the user impact is massive.
 
-**Security is a journey** — Hardcoded key → env variable → settings input → network fetch → OAuth2 tokens. Each step was driven by a real vulnerability discovered in production.
+Security is something you learn by making mistakes. I went through five iterations of how to handle the API key, each one triggered by discovering a real vulnerability.
 
 ## What's next for G-Axis
 
-**Firebase integration** — Cloud Firestore for cross-device conversation persistence and multi-user support.
+Moving conversation storage to Firebase so data persists across devices and supports multiple users.
 
-**Weekly progress reports** — AI-generated coaching reports every Sunday analyzing conversations, identifying improvement areas, and setting goals.
+Building weekly AI generated progress reports that analyze your conversations and set goals.
 
-**Group conversation scenarios** — Multi-persona sessions for team meetings, panel interviews, or group discussions with multiple AI voices.
+Adding group conversation scenarios where multiple personas interact in a simulated team meeting or panel interview.
 
-**Voice-triggered browser actions** — Bringing browser automation back into voice sessions with safe, intent-confirmed execution.
+Bringing browser actions back into voice with a confirmation step so you can say "open my calendar" and the agent asks before acting.
 
-**Mobile companion** — Lightweight mobile app connected to the same backend for voice practice on the go.
+A mobile companion app that connects to the same backend for practice on the go.
 
-**Community personas** — Users create and share custom personas with their own system prompts and voice configurations.
+And eventually letting users create and share their own custom personas with the community.
 
 ## Try it
 
-- **Live backend**: https://gaxis-132388856648.us-central1.run.app/health
-- **GitHub**: https://github.com/preethamtjit20-spec/gaxis
-- **Agent Card**: https://gaxis-132388856648.us-central1.run.app/.well-known/agent.json
+Live backend: https://gaxis-132388856648.us-central1.run.app/health
 
----
+GitHub: https://github.com/preethamtjit20-spec/gaxis
 
-*Built for the [Gemini Live Agent Challenge](https://geminiliveagentchallenge.devpost.com/). Your browser already works — G-Axis makes it intelligent.*
+Agent Card: https://gaxis-132388856648.us-central1.run.app/.well-known/agent.json
+
+Built for the Gemini Live Agent Challenge. Your browser already works. G-Axis makes it intelligent.
