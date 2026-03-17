@@ -24,37 +24,121 @@ After every conversation, Gemini analyzes how you communicated across five dimen
 
 Built this one solo.
 
-### Gemini APIs I used
-- Gemini Live API (the native audio model) for real time voice
-- Gemini 2.5 Flash for planning tasks, calling functions, analyzing sessions
-- Gemini Vision for understanding what's on screen
-- Google Search grounding so conversations have real time web data
-- text-embedding-004 for the memory retrieval system
+### Technical Specifications
 
-### Google Cloud
-- Cloud Run hosts the backend
-- Secret Manager keeps the API key safe and generates OAuth tokens
-- Cloud Build handles Docker image creation
-- Cloud Scheduler runs daily and weekly analytics jobs
-- Terraform manages all the infrastructure as code
+**System Architecture**
 
-### The voice pipeline
+| Layer | Technology | Role |
+|-------|-----------|------|
+| Client | Chrome Extension (Manifest V3) | Side Panel UI, Service Worker, Content Script |
+| Voice Engine | Gemini Live API via direct WebSocket | Bidirectional native audio streaming |
+| Task Engine | Gemini 2.5 Flash via REST | Planning, function calling, analysis |
+| Perception | Gemini Vision | Screenshot based UI understanding |
+| Search | Google Search (Grounding) | Real time web data in voice sessions |
+| Memory | text-embedding-004 | Cosine similarity retrieval over episodic store |
+| Backend | Python 3.12 / FastAPI / Uvicorn | Multi agent orchestration, WebSocket server |
+| Hosting | Google Cloud Run | 2 vCPU, 2GB RAM, autoscale 1 to 3 instances |
+| Secrets | Google Cloud Secret Manager | API key storage, OAuth2 token generation |
+| CI/CD | Google Cloud Build | Docker image build and push to GCR |
+| IaC | Terraform | Cloud Run, Secret Manager, IAM, Cloud Scheduler |
+| Scheduling | Cloud Scheduler | Daily analysis (00:00 UTC), weekly reports (Sun 23:00 UTC) |
+
+**Voice Pipeline Specifications**
+
+| Component | Specification |
+|-----------|--------------|
+| Mic Capture | AudioWorkletNode, PCM Int16, 16kHz mono, 4096 sample buffer |
+| Transport (up) | chrome.runtime.Port from popup to Service Worker |
+| Gemini Connection | Direct WebSocket to `wss://generativelanguage.googleapis.com/ws/...BidiGenerateContent` |
+| Model | `gemini-2.5-flash-native-audio-preview-12-2025` |
+| Audio Output | PCM Int16, 24kHz mono, base64 encoded |
+| Playback | Web Audio API, scheduled `AudioBufferSource.start(preciseTime)`, gapless |
+| Reconnection | Transparent, up to 20 reconnects on session timeout (~10 min) |
+| Latency | Zero hop (extension to Gemini direct, no backend proxy) |
+
+**Persona Configuration**
+
+| Persona | Voice | System Prompt Style |
+|---------|-------|-------------------|
+| Friendly Buddy | Puck | Warm, casual, curious |
+| Wise Mentor | Charon | Calm, insightful, Socratic |
+| Creative Partner | Aoede | Energetic, divergent, "yes and" |
+| Chill Companion | Fenrir | Relaxed, low pressure, easy going |
+| Professional Coach | Kore | Structured, direct, actionable |
+| Job Interviewer | Kore | Behavioral questions, feedback after each answer |
+| Friendly Debater | Charon | Respectful opposition, evidence based |
+| Storyteller | Aoede | Vivid, dramatic, collaborative narrative |
+
+**Browser Automation Architecture**
+
+| Component | Implementation |
+|-----------|---------------|
+| Orchestrator | `GAxisAgent` (core.py) delegates to specialist agents |
+| Fast Loop | `FastAgentLoop` (fast_loop.py) one Gemini call per action step |
+| Planner | Conversational task decomposition before execution |
+| Researcher | `ResearchLoop` (research_loop.py) multi source web scanning, .docx generation |
+| Tool Executor | 12 tools: click, type_text, navigate, scroll, press_key, hover, fill_form, extract_data, wait, rollback, task_complete, task_failed |
+| Content Script | DOM snapshot, MutationObserver, blocker detection, visual overlay, action execution |
+| Policy Engine | Risk scoring (none/low/medium/high/critical), cumulative risk tracking, sensitive field detection (password, payment, PII), approval gates |
+| UI Graphs | Semantic node/edge models for Calendar, Gmail, Docs, Sheets, Meet enabling deterministic form filling |
+| Connectors | 9 services, 34 skills: Calendar (6), Gmail (4), Drive (3), Docs (3), Sheets (3), Meet (3), YouTube (2), General (7), Research (3) |
+| Memory | 3 tier: Working (per task), Episodic (per domain), Semantic (cross site patterns, 5 built in) |
+
+**Conversation Analytics**
+
+| Metric | Details |
+|--------|---------|
+| Skills Tracked | Confidence, Clarity, Engagement, Listening, Pacing (0 to 100 each) |
+| Analysis Model | Gemini 2.5 Flash with structured JSON output |
+| XP System | 10 XP per minute + 50 XP per session + skill bonus, 500 XP per level |
+| Streak | Daily tracking, current and longest streak |
+| Session Record | Persona, duration, message count, word counts, topics, intent, summary, action items |
+
+**Security Architecture**
+
+| Concern | Implementation |
+|---------|---------------|
+| API Key Storage | Google Cloud Secret Manager (`gaxis-gemini-key`) |
+| Runtime Auth | OAuth2 access token via `google.auth.default()`, 60 min expiry |
+| Token Delivery | `GET /api/v` returns token, extension uses it for Gemini WSS |
+| Key in Code | Never. Scrubbed from git history via `filter-branch` |
+| CORS | `allow_origins=["*"]`, `allow_credentials=False` |
+| Path Traversal | `Path.resolve().is_relative_to()` validation on file endpoints |
+| Sensitive Actions | Policy engine requires approval for login, payment, OAuth pages |
+
+**Deployment Pipeline**
+
+```
+deploy.sh
+  1. gcloud services enable (run, cloudbuild, secretmanager)
+  2. gcloud secrets create gaxis-gemini-key
+  3. gcloud secrets add-iam-policy-binding (service account access)
+  4. gcloud builds submit (Docker build, push to GCR)
+  5. gcloud run deploy (image, env vars, secrets, scaling)
+
+terraform/main.tf
+  Resources: project_service (5 APIs), secret_manager_secret,
+             cloud_run_v2_service, service_iam_member,
+             cloud_scheduler_job (daily + weekly)
+```
+
+### How the voice pipeline works
 
 This was the hardest part to get right. Chrome sidepanels can't access the microphone directly, so I had to build a workaround. A tiny popup window opens, requests mic permission, captures audio through an AudioWorklet at 16kHz, and streams it through Chrome ports to the service worker. The service worker connects directly to Gemini Live over WebSocket. No backend in the middle. Audio comes back at 24kHz and plays through a scheduler I built that times each buffer to start at the exact moment the previous one ends. No gaps, no stuttering.
 
-### Personas
+### How personas work
 
 Each of the 8 personas lives in a single JS file with its own system prompt, voice selection, and conversation style. When you switch mid conversation, the current session gets saved and analyzed automatically, the transcript clears, and a fresh connection opens with the new persona's config.
 
-### Browser automation
+### How browser automation works
 
 The backend runs a multi agent system. An orchestrator hands tasks to a fast loop (one Gemini call per step), a planner (for complex multi step goals), or a researcher (scans multiple websites). Twelve browser tools handle the actual clicking, typing, scrolling, and form filling through the content script. A policy engine checks every action for risk and asks for your approval on anything sensitive.
 
-### Security
+### How security works
 
 The API key sits in Cloud Secret Manager. When the extension needs to start a voice session, it hits a backend endpoint that generates a short lived OAuth2 token (good for about 60 minutes). The actual key never touches the extension code, never shows up in git, never crosses the network as a raw credential.
 
-### Deployment
+### How deployment works
 
 One script does everything. Run `./deploy.sh` and it enables the APIs, creates the secrets, builds the Docker image through Cloud Build, and deploys to Cloud Run. Terraform manages all the resources. I can tear down and rebuild the entire infrastructure in minutes.
 
